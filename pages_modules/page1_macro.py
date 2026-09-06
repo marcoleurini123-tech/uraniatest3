@@ -21,32 +21,32 @@ def get_cached_macro_data():
     return fetch_macro_cycle_data()
 
 def render_page1():
-    # CSS Iniettato: Forzatura gerarchica assoluta sui nodi testuali del DOM di Streamlit
+    # CSS Iniettato: Dominanza assoluta sui nodi di testo Streamlit
     st.markdown("""
     <style>
-        .stApp { background-color: #0b1121; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        .stApp { background-color: #0b1121 !important; color: #f8fafc !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
         
         /* Cifre Metriche Principali */
-        div[data-testid="stMetricValue"] { 
+        [data-testid="stMetricValue"], 
+        [data-testid="stMetricValue"] > div { 
             color: #ffffff !important; 
             font-size: 1.7rem !important; 
             font-weight: 800 !important; 
         }
         
-        /* Etichette Metriche - Penetrazione profonda nei nodi figli per contrasto assoluto */
-        div[data-testid="stMetricLabel"],
-        div[data-testid="stMetricLabel"] > *,
-        div[data-testid="stMetricLabel"] p,
-        div[data-testid="stMetricLabel"] span,
-        div[data-testid="stMetricLabel"] label { 
+        /* Etichette Metriche - Neutralizzazione ereditarietà di sistema */
+        [data-testid="stMetricLabel"],
+        [data-testid="stMetricLabel"] * { 
             color: #cbd5e1 !important; 
             font-weight: 700 !important; 
-            font-size: 0.9rem !important; 
+            font-size: 0.85rem !important; 
             text-transform: uppercase !important; 
             letter-spacing: 0.5px !important; 
+            opacity: 1 !important;
+            visibility: visible !important;
         }
         
-        hr { border-color: #1e293b; margin-top: 2rem; margin-bottom: 2rem; }
+        hr { border-color: #1e293b !important; margin-top: 2rem !important; margin-bottom: 2rem !important; }
     </style>
     """, unsafe_allow_html=True)
 
