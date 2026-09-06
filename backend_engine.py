@@ -7,6 +7,7 @@ import os
 import math
 from datetime import datetime, timedelta
 import pandas_datareader.data as web
+from scipy.stats import linregress
 
 DB_FILE = "macro_database.csv"
 GOOGLE_BRIDGE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSeeY57SBwd6BftA2Bq8C0nyzzT3wj9WRWOihDF7QE-COPXhC4r2RN_k_BRgZke1nU2BbKT8oRlsXOX/pub?gid=1412711569&single=true&output=csv"
@@ -18,23 +19,28 @@ COLUMNS = [
     "Net_Liquidity", "M2"
 ]
 
-# --- COSTANTI MODULO A (REGIMI MACRO) ---
+# --- COSTANTI MODULO A (REGIMI MACRO) - NOMENCLATURA PROPRIETARIA ---
 REGIME_BASKETS = {
-    "GOLDILOCKS ECONOMY": ["QQQ", "XLK", "XLY", "IEF", "SMH"],
-    "RECESSION": ["TLT", "SHY", "XLU", "XLP", "GLD"],
-    "STAGFLATION": ["GLD", "DBC", "XLE", "TIP"],
-    "REFLATION": ["XLI", "XLF", "IWM", "EEM", "DBC"],
-    "DISINFLATION/SOFT LANDING": ["TLT", "LQD", "QQQ", "VTI", "GLD"],
-    "DOLLAR WEAKNESS/GLOBAL REBALANCING": ["EEM", "FXF", "GLD", "IXUS", "DBC"],
-    "DEFLATION": ["TLT", "BIL", "SHY", "XLP", "XLU"],
-    "DOLLAR WEAKNESS/GLOBAL REBALANCING + BITCOIN": ["EEM", "FXF", "GLD", "IXUS", "IBIT"],
-    "DEBASEMENT AGGRESSIVO": ["GLD", "XME", "COPX", "EEM", "IBIT"],
-    "DEBASEMENT (SENZA BITCOIN)": ["GLD", "XME", "COPX", "EEM", "VGSH"],
+    "Crescita Equilibrata": ["SPY", "QQQ", "IWM", "LQD"],
+    "Contrazione Ciclica": ["TLT", "IEF", "ZROZ"],
+    "Stagflazione": ["GLD", "PDBC", "TIP"],
+    "Reflazione": ["XLE", "XLF", "XLI", "COPX"],
+    "Disinflazione / Soft Landing": ["IEF", "LQD", "XLP"],
+    "Indebolimento Valutario / Global Rebalance": ["EEM", "VEA", "GLD"],
+    "Deflazione": ["BIL", "SHY", "GOVT"],
+    "Svalutazione Monetaria Base": ["GLD", "SLV", "GDX"],
+    "Svalutazione Monetaria Aggressiva": ["IBIT", "MSTR", "GLD", "SLV"]
 }
 
-TIMEFRAMES = {"Δ 1W": 5, "Δ 1M": 21, "Δ 3M": 63}
+# Estensione orizzonte temporale a 5 Anni (1260 giorni lavorativi)
+TIMEFRAMES = {
+    "Δ 1D": 1, "Δ 1W": 5, "Δ 1M": 21, "Δ 3M": 63, 
+    "Δ 6M": 126, "Δ 1Y": 252, "Δ 2Y": 504, "Δ 3Y": 756, "Δ 5Y": 1260
+}
 
-# --- FUNZIONI DI BASE E FETCHING DATI ---
+# ==========================================================
+# FUNZIONI DI BASE, DATABASE E DATA FETCHING (NESSUNA ALLUCINAZIONE)
+# ==========================================================
 def load_db():
     if os.path.exists(DB_FILE):
         df = pd.read_csv(DB_FILE)
@@ -55,6 +61,8 @@ def load_db():
     return pd.DataFrame(columns=COLUMNS)
 
 def save_db(df):
+    if df.empty:
+        return
     df = df.drop_duplicates(subset=['Data'], keep='last').sort_values("Data")
     df.to_csv(DB_FILE, index=False)
 
@@ -97,8 +105,7 @@ def fetch_yahoo_data(days=365):
         cols_to_keep = ['Data'] + [c for c in df.columns if c in tickers_map.values()]
         return df[cols_to_keep]
         
-    except Exception as e:
-        print(f"Errore Critico YF Fetch: {e}")
+    except Exception:
         return pd.DataFrame(columns=['Data'] + list(tickers_map.values()))
 
 def fetch_bridge_data():
@@ -108,7 +115,7 @@ def fetch_bridge_data():
         df = pd.read_csv(io.StringIO(response.text))
         df.columns = df.columns.str.strip()
         
-        col_mapping = {'Date': 'Data', 'Net_Liquidity': 'Net_Liquidity', 'M2': 'M2'}
+        col_mapping = {'Date': 'Data', 'Net_Liquidity': 'Net_Liquidity', 'M2': 'M2', 'MOVE': 'MOVE'}
         df = df.rename(columns=lambda x: col_mapping.get(x, x))
         
         if 'Data' not in df.columns:
@@ -159,16 +166,17 @@ def fetch_cboe_pc_ratio():
         return pd.DataFrame(columns=['Data', 'P_C'])
 
 def calculate_rolling_zscore(series, window=252):
+    """Calcolo rigoroso Z-Score storici."""
     rolling_mean = series.rolling(window=window, min_periods=1).mean()
     rolling_std = series.rolling(window=window, min_periods=1).std(ddof=0)
     return np.where(rolling_std == 0, 0, (series - rolling_mean) / rolling_std)
 
 
 # ==========================================================
-# MODULO A: IDENTIFICATORE DI REGIME (I 9 PORTAFOGLI) & SOFTMAX
+# MODULO A: MATRICE DEI REGIMI & Z-SCORE PREDOMINANTE
 # ==========================================================
-
-def fetch_regime_baskets_data(period="2y"):
+def fetch_regime_baskets_data(period="5y"):
+    """Recupera fino a 5 anni di storico per i 9 portafogli macro."""
     try:
         unique_tickers = sorted(list({ticker for basket in REGIME_BASKETS.values() for ticker in basket}))
         data = yf.download(tickers=unique_tickers, period=period, interval="1d", auto_adjust=True, progress=False)
@@ -185,13 +193,16 @@ def fetch_regime_baskets_data(period="2y"):
             df = data.copy()
             
         return df.dropna(how="all").sort_index()
-    except Exception as e:
-        print(f"Errore Modulo A Data Fetching: {e}")
+    except Exception:
         return pd.DataFrame()
 
 def calculate_regime_matrix(df_prices):
-    if df_prices.empty or len(df_prices) < 63:
-        return pd.DataFrame(), "Dati Insufficienti", 0.0
+    """
+    Calcola la matrice dei ritorni equipesati fino a 5Y.
+    Determina il Regime Predominante calcolando lo Z-Score cross-sezionale sui rendimenti 1W e 1M.
+    """
+    if df_prices.empty:
+        return pd.DataFrame(), "Dati Insufficienti", pd.Series()
 
     matrix = []
     
@@ -201,164 +212,181 @@ def calculate_regime_matrix(df_prices):
             continue
             
         basket_prices = df_prices[valid_tickers].ffill()
+        daily_returns = basket_prices.pct_change()
+        eq_daily_ret = daily_returns.mean(axis=1)
+        cumulative_idx = (1 + eq_daily_ret).cumprod()
+        
         row_data = {"Regime": regime}
         
         for tf_label, days in TIMEFRAMES.items():
-            if len(basket_prices) > days:
-                p_now = basket_prices.iloc[-1]
-                p_past = basket_prices.iloc[-(days + 1)]
+            if len(cumulative_idx) > days:
+                p_now = cumulative_idx.iloc[-1]
+                p_past = cumulative_idx.iloc[-(days + 1)]
                 roc = ((p_now - p_past) / p_past) * 100.0
-                row_data[tf_label] = float(np.nanmean(roc))
+                row_data[tf_label] = float(roc)
             else:
                 row_data[tf_label] = np.nan
                 
         matrix.append(row_data)
 
+    if not matrix:
+        return pd.DataFrame(), "Dati Insufficienti", pd.Series()
+
     df_matrix = pd.DataFrame(matrix).set_index("Regime")
-    confidence_pct = 0.0
     
+    predominant_regime = "N/D"
+    z_combined = pd.Series(dtype=float)
+
     if "Δ 1W" in df_matrix.columns and "Δ 1M" in df_matrix.columns:
-        momentum_score = (df_matrix["Δ 1W"] + df_matrix["Δ 1M"]) / 2.0
-        dominant = momentum_score.idxmax() if not momentum_score.dropna().empty else "N/D"
+        perf_1w = df_matrix["Δ 1W"].astype(float)
+        perf_1m = df_matrix["Δ 1M"].astype(float)
         
-        # Trasformazione Softmax in probabilità (0-100)
-        if dominant != "N/D":
-            m_valid = momentum_score.dropna()
-            if len(m_valid) > 1 and m_valid.std() > 0:
-                z_scores = (m_valid - m_valid.mean()) / m_valid.std()
-                exp_z = np.exp(z_scores)
-                probs = (exp_z / exp_z.sum()) * 100.0
-                confidence_pct = round(probs[dominant], 1)
-            else:
-                confidence_pct = 100.0
-    else:
-        dominant = "N/D"
-        
-    return df_matrix.round(2), dominant, confidence_pct
+        if not perf_1w.isna().all() and not perf_1m.isna().all():
+            z_1w = (perf_1w - perf_1w.mean()) / (perf_1w.std() + 1e-9)
+            z_1m = (perf_1m - perf_1m.mean()) / (perf_1m.std() + 1e-9)
+            z_combined = (z_1w + z_1m) / 2.0
+            predominant_regime = z_combined.idxmax()
+            
+    return df_matrix.round(2), predominant_regime, z_combined
 
 
 # ==========================================================
-# MODULO B: POSIZIONAMENTO NEL CICLO ECONOMICO (LE 4 FASI)
+# MODULO B: CICLO ECONOMICO & REGOLA DEL VETO INCROCIATO
 # ==========================================================
-
 def fetch_macro_cycle_data():
+    """Recupera dati di ciclo (Spread Curva, Rame, Oro, TIPS, 30Y Treasury)"""
     end_date = datetime.now()
     start_date = end_date - timedelta(days=365 * 4) 
-    
-    df_macro = pd.DataFrame()
     
     try:
         fred_series = {
             'DGS10': '10Y_Yield',
             'DGS2': '2Y_Yield',
-            'DGS30': '30Y_Yield',
-            'CPIAUCSL': 'CPI_Index'
+            'DGS30': '30Y_Yield'
         }
         df_fred = web.DataReader(list(fred_series.keys()), 'fred', start_date, end_date)
-        df_fred = df_fred.rename(columns=fred_series)
+        df_fred = df_fred.rename(columns=fred_series).ffill()
         
-        df_fred['CPI_Index'] = df_fred['CPI_Index'].ffill()
-        df_fred['CPI_YoY'] = df_fred['CPI_Index'].pct_change(periods=252) * 100
-        
-        yf_data = yf.download(["HG=F", "GC=F"], start=start_date, end=end_date, progress=False)
+        # Sostituiamo il CPI con il proxy TIPS per ottenere i tassi reali in tempo reale tramite mercato
+        yf_data = yf.download(["HG=F", "GC=F", "TIP"], start=start_date, end=end_date, progress=False)
         if isinstance(yf_data.columns, pd.MultiIndex):
-            df_yf = yf_data['Close'].rename(columns={'HG=F': 'Copper', 'GC=F': 'Gold'})
+            df_yf = yf_data['Close'].rename(columns={'HG=F': 'Copper', 'GC=F': 'Gold', 'TIP': 'TIPS_ETF'})
         else:
-            df_yf = yf_data.rename(columns={'HG=F': 'Copper', 'GC=F': 'Gold'})
+            df_yf = yf_data.rename(columns={'HG=F': 'Copper', 'GC=F': 'Gold', 'TIP': 'TIPS_ETF'})
             
         df_macro = pd.merge(df_fred, df_yf, left_index=True, right_index=True, how='inner')
-        df_macro = df_macro.dropna(subset=['10Y_Yield', '2Y_Yield', 'Copper', 'Gold']).sort_index()
-        return df_macro
-
-    except Exception as e:
-        print(f"Errore Modulo B Data Fetching: {e}")
+        return df_macro.dropna(subset=['10Y_Yield', '2Y_Yield', 'Copper', 'Gold']).sort_index()
+    except Exception:
         return pd.DataFrame()
 
-def calculate_macro_cycle_phase(df_macro):
+def calculate_macro_cycle_phase(df_macro, predominant_regime):
+    """
+    Determina la fase (Ripresa, Espansione, Picco/Stagflazione, Contrazione).
+    Input esclusivi matematici + Applicazione Hard Override del Veto.
+    """
     if df_macro.empty or len(df_macro) < 252:
-        return "DATI INSUFFICIENTI", {}
+        return "DATI INSUFFICIENTI", "N/D", False, {}
         
     df = df_macro.copy()
     
+    # 1. Spread 10Y - 2Y
     df['Spread_10Y_2Y'] = df['10Y_Yield'] - df['2Y_Yield']
-    df['Copper_Gold_Ratio'] = df['Copper'] / df['Gold']
-    df['Real_Rates'] = df['10Y_Yield'] - df['CPI_YoY'].fillna(0)
-    
     current_spread = df['Spread_10Y_2Y'].iloc[-1]
-    is_inverted = current_spread < 0
     
-    df['C_G_SMA200'] = df['Copper_Gold_Ratio'].rolling(window=200).mean()
-    is_copper_gold_bullish = df['Copper_Gold_Ratio'].iloc[-1] > df['C_G_SMA200'].iloc[-1]
-    
-    df['Real_Rates_Z252'] = calculate_rolling_zscore(df['Real_Rates'], window=252)
-    is_real_rates_breakout = df['Real_Rates_Z252'].iloc[-1] > 1.5 
-    
-    df['30Y_Z756'] = calculate_rolling_zscore(df['30Y_Yield'], window=756)
-    is_debasement_risk = df['30Y_Z756'].iloc[-1] > 1.5
-    
-    if is_inverted and not is_copper_gold_bullish:
-        fase = "CONTRAZIONE"
-    elif is_inverted or is_real_rates_breakout:
-        fase = "PICCO / STAGFLAZIONE"
-    elif not is_inverted and is_copper_gold_bullish and not is_debasement_risk:
-        fase = "ESPANSIONE"
+    # 2. Pendenza Copper / Gold (Ultimi 40 GG lavorativi)
+    df['Copper_Gold_Ratio'] = df['Copper'] / df['Gold']
+    window = 40
+    if len(df) >= window:
+        y_vals = df['Copper_Gold_Ratio'].iloc[-window:].values
+        x_vals = np.arange(len(y_vals))
+        slope, _, _, _, _ = linregress(x_vals, y_vals)
+        cg_slope = slope / df['Copper_Gold_Ratio'].iloc[-window] * 1000
     else:
-        fase = "RIPRESA"
-        
+        cg_slope = 0.0
+
+    # 3. Z-Score Tassi Reali (Proxy ETF TIP, direzione inversa)
+    if 'TIPS_ETF' in df.columns:
+        mean_tips = df['TIPS_ETF'].rolling(252).mean().iloc[-1]
+        std_tips = df['TIPS_ETF'].rolling(252).std().iloc[-1]
+        z_real_rates = - (df['TIPS_ETF'].iloc[-1] - mean_tips) / (std_tips + 1e-9)
+    else:
+        z_real_rates = 0.0
+
+    # 4. Z-Score 30Y Treasury
+    mean_30y = df['30Y_Yield'].rolling(252).mean().iloc[-1]
+    std_30y = df['30Y_Yield'].rolling(252).std().iloc[-1]
+    z_30y = (df['30Y_Yield'].iloc[-1] - mean_30y) / (std_30y + 1e-9)
+
+    # Logica di base
+    if current_spread > 0 and cg_slope > 0:
+        raw_phase = "Espansione"
+    elif current_spread > 0 and cg_slope <= 0:
+        raw_phase = "Ripresa"
+    elif current_spread <= 0 and cg_slope > 0:
+        raw_phase = "Picco / Stagflazione"
+    else:
+        raw_phase = "Contrazione"
+
+    # ==========================================================================
+    # REGOLA DEL VETO INCROCIATO RIGIDO
+    # Se il Regime Predominante è Svalutazione o Stagflazione, "Ripresa" è interdetta.
+    # ==========================================================================
+    veto_applied = False
+    final_phase = raw_phase
+    regimi_antitetici = ["Svalutazione Monetaria Base", "Svalutazione Monetaria Aggressiva", "Stagflazione"]
+    
+    if predominant_regime in regimi_antitetici and raw_phase == "Ripresa":
+        veto_applied = True
+        final_phase = "Picco / Stagflazione" if cg_slope >= 0 else "Contrazione"
+
     metrics = {
         "Spread_10Y_2Y": round(current_spread, 2),
-        "Copper_Gold_Trend": "Rialzista" if is_copper_gold_bullish else "Ribassista",
-        "Real_Rates_Z": round(df['Real_Rates_Z252'].iloc[-1], 2),
-        "30Y_Yield_Z": round(df['30Y_Z756'].iloc[-1], 2),
-        "Debasement_Risk": is_debasement_risk
+        "Pendenza_Cu_Au_40D": round(cg_slope, 3),
+        "Z_Score_Tassi_Reali": round(z_real_rates, 2),
+        "Z_Score_30Y_Yield": round(z_30y, 2)
     }
     
-    return fase, metrics
+    return final_phase, raw_phase, veto_applied, metrics
+
 
 # ==========================================================
-# MODULO: CALCOLO STATISTICO PROPENSIONE AL RISCHIO (RISK ON/OFF)
+# MODULO C: PROTOCOLLO DI HARD OVERRIDE (RISK MANAGEMENT)
 # ==========================================================
-
-def calculate_risk_propensity(df_master):
-    if df_master.empty or len(df_master) < 252:
-        return None, "DATI INSUFFICIENTI"
-
-    df_calc = df_master.tail(252).copy()
+def evaluate_risk_override(df_db):
+    """
+    Monitora SKEW, VIX e contrazione della liquidità.
+    Restituisce Boolean per Risk Off, array di cause ed i valori attuali.
+    """
+    if df_db.empty:
+        return False, ["Dati Mancanti"], np.nan, np.nan
+        
+    df_clean = df_db.sort_values("Data").ffill()
     
-    required = ['XLY', 'XLP', 'SPY', 'RSP', 'HYG', 'TLT']
-    if not all(col in df_calc.columns for col in required):
-        return None, "DATI INSUFFICIENTI"
+    skew_val = df_clean['SKEW'].iloc[-1] if 'SKEW' in df_clean.columns else np.nan
+    vix_val = df_clean['VIX'].iloc[-1] if 'VIX' in df_clean.columns else np.nan
+    
+    net_liq_contraction = False
+    if 'Net_Liquidity' in df_clean.columns:
+        valid_liq = df_clean['Net_Liquidity'].dropna()
+        if len(valid_liq) >= 21:
+            liq_now = valid_liq.iloc[-1]
+            liq_past = valid_liq.iloc[-21]
+            if liq_past > 0:
+                momentum_1m = (liq_now - liq_past) / liq_past
+                if momentum_1m < -0.065: # Contrazione superiore al 6.5% mese su mese
+                    net_liq_contraction = True
 
-    df_calc['Risk_XLY_XLP'] = np.where(df_calc['XLP'] > 0, df_calc['XLY'] / df_calc['XLP'], np.nan)
-    df_calc['Risk_SPY_RSP'] = np.where(df_calc['RSP'] > 0, df_calc['SPY'] / df_calc['RSP'], np.nan)
-    df_calc['Risk_HYG_TLT'] = np.where(df_calc['TLT'] > 0, df_calc['HYG'] / df_calc['TLT'], np.nan)
-
-    df_calc = df_calc.dropna(subset=['Risk_XLY_XLP', 'Risk_SPY_RSP', 'Risk_HYG_TLT'])
-    if len(df_calc) < 200: 
-        return None, "DATI STORICI CARENTI"
-
-    z_xly = (df_calc['Risk_XLY_XLP'].iloc[-1] - df_calc['Risk_XLY_XLP'].mean()) / df_calc['Risk_XLY_XLP'].std(ddof=0)
-    z_spy = (df_calc['Risk_SPY_RSP'].iloc[-1] - df_calc['Risk_SPY_RSP'].mean()) / df_calc['Risk_SPY_RSP'].std(ddof=0)
-    z_hyg = (df_calc['Risk_HYG_TLT'].iloc[-1] - df_calc['Risk_HYG_TLT'].mean()) / df_calc['Risk_HYG_TLT'].std(ddof=0)
-
-    avg_z = (z_xly + z_spy + z_hyg) / 3.0
-
-    risk_on_prob = 0.5 * (1 + math.erf(avg_z / math.sqrt(2)))
-    risk_on_pct = round(risk_on_prob * 100.0, 1)
-    risk_off_pct = round(100.0 - risk_on_pct, 1)
-
-    if risk_on_pct > 60:
-        status = "RISK ON"
-    elif risk_on_pct < 40:
-        status = "RISK OFF"
-    else:
-        status = "NEUTRAL"
-
-    metrics = {
-        "Risk_On_Pct": risk_on_pct,
-        "Risk_Off_Pct": risk_off_pct,
-        "Status": status,
-        "Z_Avg": round(avg_z, 2)
-    }
-
-    return metrics, None
+    trigger_skew = (not np.isnan(skew_val)) and (skew_val >= 140.0)
+    trigger_vix = (not np.isnan(vix_val)) and (vix_val >= 30.0)
+    
+    is_risk_off = trigger_skew or trigger_vix or net_liq_contraction
+    
+    reasons = []
+    if trigger_skew:
+        reasons.append(f"SKEW Critico: {skew_val:.1f} (> 140.0)")
+    if trigger_vix:
+        reasons.append(f"VIX Panico: {vix_val:.1f} (> 30.0)")
+    if net_liq_contraction:
+        reasons.append("Contrazione mensile netta della Liquidità M2 > 6.5%")
+        
+    return is_risk_off, reasons, skew_val, vix_val
