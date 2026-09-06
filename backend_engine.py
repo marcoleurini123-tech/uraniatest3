@@ -18,7 +18,7 @@ COLUMNS = [
     "Net_Liquidity", "M2"
 ]
 
-# Composizione MATEMATICA ORIGINALE ripristinata dai Google Sheets
+# MATRICE RIGOROSA: Ticker allineati al Foglio Google (con VDST.MI per Borsa Italiana)
 REGIME_BASKETS = {
     "GOLDILOCKS ECONOMY": ["QQQ", "XLK", "XLY", "IEF", "SMH"],
     "RECESSION": ["TLT", "SHY", "XLU", "XLP", "GLD"],
@@ -29,17 +29,17 @@ REGIME_BASKETS = {
     "DEFLATION": ["TLT", "BIL", "SHY", "XLP", "XLU"],
     "DOLLAR WEAKNESS/GLOBAL REBALANCING +BITCOIN": ["EEM", "FXF", "GLD", "IXUS", "IBIT"],
     "DEBASEMENT AGGRESSIVO": ["GLD", "XME", "COPX", "EEM", "IBIT"],
-    "DEBASEMENT (SENZA BITCOIN)": ["GLD", "XME", "COPX", "EEM", "VGSH"]
+    "DEBASEMENT (SENZA BITCOIN)": ["GLD", "XME", "COPX", "EEM", "VDST.MI"]
 }
 
-# Traduzione orizzonti in giorni lavorativi di borsa
+# Traduzione orizzonti in Trading Days
 TIMEFRAMES = {
     "Δ 1D": 1, "Δ 1W": 5, "Δ 1M": 21, "Δ 3M": 63, 
     "Δ 6M": 126, "Δ 1Y": 252, "Δ 2Y": 504, "Δ 3Y": 756, "Δ 5Y": 1260
 }
 
 # ==========================================================
-# FETCHING DATI (REGOLA 1: TOLLERANZA ZERO DATI FITTIZI)
+# FETCHING DATI - ANTI ALLUCINAZIONE
 # ==========================================================
 def load_db():
     if os.path.exists(DB_FILE):
@@ -48,14 +48,11 @@ def load_db():
         if df['Data'].dt.tz is not None:
             df['Data'] = df['Data'].dt.tz_localize(None)
         df['Data'] = df['Data'].dt.normalize()
-        
         for col in COLUMNS:
             if col not in df.columns: df[col] = np.nan
-                
         num_cols = [c for c in COLUMNS if c != "Data"]
         for c in num_cols:
             df[c] = pd.to_numeric(df[c], errors='coerce')
-                
         return df.dropna(subset=['Data']).sort_values("Data")
     return pd.DataFrame(columns=COLUMNS)
 
@@ -150,16 +147,21 @@ def calculate_rolling_zscore(series, window=252):
 # MODULO A: MATRICE REGIMI E SOFTMAX PROBABILITA'
 # ==========================================================
 def fetch_regime_baskets_data(period="10y"):
-    """Fetch a 10 anni per garantire sufficienti candele giornaliere per il calcolo del delta 5Y (1260gg)."""
     try:
         unique_tickers = sorted(list({ticker for basket in REGIME_BASKETS.values() for ticker in basket}))
-        data = yf.download(tickers=unique_tickers, period=period, interval="1d", auto_adjust=True, progress=False)
+        # ERRORE FIXATO: auto_adjust=False per prelevare il RAW Close (esattamente come Google Finance)
+        data = yf.download(tickers=unique_tickers, period=period, interval="1d", auto_adjust=False, progress=False)
         if data.empty: return pd.DataFrame()
         
         if isinstance(data.columns, pd.MultiIndex):
             if "Close" in data.columns.levels[0]: df = data["Close"].copy()
-            else: df = data.xs(data.columns.levels[0][0], axis=1, level=0).copy()
-        else: df = data.copy()
+            else: df = data.xs("Close", axis=1, level=0).copy()
+        else: 
+            if 'Close' in data.columns:
+                df = pd.DataFrame(data['Close'])
+                df.columns = [unique_tickers[0]]
+            else:
+                df = data.copy()
         return df.dropna(how="all").sort_index()
     except Exception:
         return pd.DataFrame()
@@ -176,16 +178,12 @@ def calculate_regime_matrix(df_prices):
         basket_prices = df_prices[valid_tickers].ffill()
         row_data = {"Regime": regime}
         
-        # Algoritmo Matematico Allineato al Google Sheet (Media Aritmetica dei Rendimenti Point-to-Point)
         for tf_label, days in TIMEFRAMES.items():
             if len(basket_prices) > days:
                 p_now = basket_prices.iloc[-1]
                 p_past = basket_prices.iloc[-(days + 1)]
                 
-                # Calcola il ROC per ogni singolo ETF nel paniere
                 roc_individual_assets = ((p_now - p_past) / p_past) * 100.0
-                
-                # Effettua la media aritmetica semplice per pareggiare la matrice Excel
                 row_data[tf_label] = float(roc_individual_assets.mean())
             else:
                 row_data[tf_label] = np.nan
@@ -199,7 +197,6 @@ def calculate_regime_matrix(df_prices):
     confidence_pct = 0.0
     dominant = "N/D"
 
-    # Selezione Dominante e Probabilità Softmax
     if "Δ 1W" in df_matrix.columns and "Δ 1M" in df_matrix.columns:
         momentum_score = (df_matrix["Δ 1W"] + df_matrix["Δ 1M"]) / 2.0
         m_valid = momentum_score.dropna()
@@ -214,7 +211,6 @@ def calculate_regime_matrix(df_prices):
                 confidence_pct = 100.0
                 
     return df_matrix.round(2), dominant, confidence_pct
-
 
 # ==========================================================
 # MODULO B: CICLO ECONOMICO
@@ -286,30 +282,24 @@ def calculate_macro_cycle_phase(df_macro, predominant_regime):
     }
     return final_phase, raw_phase, veto_applied, metrics
 
-
 # ==========================================================
 # MODULO C: PROPENSIONE AL RISCHIO E HARD OVERRIDE
 # ==========================================================
 def calculate_risk_propensity(df_master):
     if df_master.empty or len(df_master) < 252:
         return None, "DATI INSUFFICIENTI"
-
     df_calc = df_master.tail(252).copy()
     required = ['XLY', 'XLP', 'SPY', 'RSP', 'HYG', 'TLT']
-    if not all(col in df_calc.columns for col in required):
-        return None, "DATI INSUFFICIENTI"
-
+    if not all(col in df_calc.columns for col in required): return None, "DATI INSUFFICIENTI"
     df_calc['Risk_XLY_XLP'] = np.where(df_calc['XLP'] > 0, df_calc['XLY'] / df_calc['XLP'], np.nan)
     df_calc['Risk_SPY_RSP'] = np.where(df_calc['RSP'] > 0, df_calc['SPY'] / df_calc['RSP'], np.nan)
     df_calc['Risk_HYG_TLT'] = np.where(df_calc['TLT'] > 0, df_calc['HYG'] / df_calc['TLT'], np.nan)
     df_calc = df_calc.dropna(subset=['Risk_XLY_XLP', 'Risk_SPY_RSP', 'Risk_HYG_TLT'])
-    
     if len(df_calc) < 200: return None, "DATI STORICI CARENTI"
 
     z_xly = (df_calc['Risk_XLY_XLP'].iloc[-1] - df_calc['Risk_XLY_XLP'].mean()) / df_calc['Risk_XLY_XLP'].std(ddof=0)
     z_spy = (df_calc['Risk_SPY_RSP'].iloc[-1] - df_calc['Risk_SPY_RSP'].mean()) / df_calc['Risk_SPY_RSP'].std(ddof=0)
     z_hyg = (df_calc['Risk_HYG_TLT'].iloc[-1] - df_calc['Risk_HYG_TLT'].mean()) / df_calc['Risk_HYG_TLT'].std(ddof=0)
-
     avg_z = (z_xly + z_spy + z_hyg) / 3.0
 
     risk_on_prob = 0.5 * (1 + math.erf(avg_z / math.sqrt(2)))
@@ -331,7 +321,6 @@ def calculate_risk_propensity(df_master):
 def evaluate_risk_override(df_db):
     if df_db.empty: return False, ["Dati Mancanti"], np.nan, np.nan
     df_clean = df_db.sort_values("Data").ffill()
-    
     skew_val = df_clean['SKEW'].iloc[-1] if 'SKEW' in df_clean.columns else np.nan
     vix_val = df_clean['VIX'].iloc[-1] if 'VIX' in df_clean.columns else np.nan
     
