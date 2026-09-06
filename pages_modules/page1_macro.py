@@ -21,15 +21,15 @@ def get_cached_macro_data():
     return fetch_macro_cycle_data()
 
 def render_page1():
+    # CSS per il layout rigoroso Dark Mode e reset margini
     st.markdown("""
     <style>
-        .stApp { background-color: #0b0f19; color: #f8fafc; }
+        .stApp { background-color: #0f172a; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
         div[data-testid="stMetricValue"] { font-size: 1.6rem; font-weight: 700; }
-        hr { border-color: #1e293b; }
+        hr { border-color: #334155; margin-top: 2rem; margin-bottom: 2rem; }
     </style>
     """, unsafe_allow_html=True)
 
-    st.title("🛡️ Terminale Macro Professionale")
     st.caption("Status: Online | Motore: Vettoriale")
     
     df = load_db()
@@ -99,10 +99,12 @@ def render_page1():
         st.warning("⚠️ Database locale vuoto. Esegui la sincronizzazione API.")
         return
 
+    # Normalizzazione Dataset
     df = df.sort_values("Data").reset_index(drop=True)
     num_cols = [c for c in COLUMNS if c != "Data" and c in df.columns]
     df[num_cols] = df[num_cols].ffill(limit=7)
 
+    # Indicatori Calcolati
     df['Liq_Delta_5D'] = df['Net_Liquidity'].pct_change(periods=5) * 100
     df['Ratio_GO'] = np.where(df['USO'] > 0, df['GLD'] / df['USO'], np.nan)
     df['Ratio_Risk'] = np.where(df['XLP'] > 0, df['XLY'] / df['XLP'], np.nan)
@@ -111,22 +113,25 @@ def render_page1():
     last = df.iloc[-1]
     
     # ==========================================================
-    # MODULO OVERRIDE E RISK MANAGEMENT
+    # MODULO OVERRIDE E RISK MANAGEMENT (HARD STOP)
     # ==========================================================
     is_risk_off, override_reasons, current_skew, current_vix = evaluate_risk_override(df)
 
     if is_risk_off:
         st.markdown(f"""
-        <div style="background-color: #490202; border: 2px solid #f85149; border-radius: 8px; padding: 16px; color: #ff7b72; margin-bottom: 20px;">
-            <h3 style="margin:0; color:#ff7b72;">🚨 HARD OVERRIDE ATTIVO: RISK OFF / PANICO</h3>
-            <p style="margin-top:8px; font-weight:bold;">BLOCCO OPERATIVO ASSOLUTO.</p>
-            <ul style="margin:0; padding-left:20px;">
+        <div style="background-color: #450a0a; border: 1px solid #ef4444; border-radius: 6px; padding: 16px; margin-bottom: 24px;">
+            <h3 style="margin:0; color:#ef4444; font-size: 1.2rem;">🚨 HARD OVERRIDE ATTIVO: RISK OFF / PANICO</h3>
+            <p style="margin-top:8px; color: #fca5a5; font-size: 0.9rem; font-weight:bold;">BLOCCO OPERATIVO ASSOLUTO.</p>
+            <ul style="margin:0; padding-left:20px; color: #fca5a5; font-size: 0.9rem;">
                 {''.join([f'<li>{r}</li>' for r in override_reasons])}
             </ul>
         </div>
         """, unsafe_allow_html=True)
 
-    r1, r2 = st.columns(6)
+    # ==========================================================
+    # KPI DASHBOARD (Risolto bug unpack st.columns)
+    # ==========================================================
+    r1 = st.columns(6)
     
     dix_v = last.get('DIX', np.nan)
     r1[0].metric("DIX", f"{dix_v:.1f}%" if not pd.isna(dix_v) else "N/A", "🟢 BULLISH" if dix_v > 45 else "⚪ NEUTRO")
@@ -142,6 +147,9 @@ def render_page1():
     liq_col = "normal" if not pd.isna(liq_d) and liq_d >= 0 else "inverse"
     r1[5].metric("Δ LIQ. 5D", f"{liq_d:.2f}%" if not pd.isna(liq_d) else "N/A", "📉 CONTRAZIONE" if not pd.isna(liq_d) and liq_d < 0 else "📈 ESPANSIONE", delta_color=liq_col)
 
+    st.write("") # Spaziatura
+    r2 = st.columns(6)
+    
     dxy_v = last.get('DXY', np.nan)
     r2[0].metric("DXY", f"{dxy_v:.2f}" if not pd.isna(dxy_v) else "N/A", "🔴 USD UP" if dxy_v > 103.5 else "🟢 USD DOWN", delta_color="inverse")
     rgo_v = last.get('Ratio_GO', np.nan)
@@ -160,9 +168,9 @@ def render_page1():
     st.divider()
 
     # ==========================================================
-    # CARDS MACRO E MERCATI (Probabilità e Regime)
+    # CARDS MACRO: REGIME E PROPENSIONE AL RISCHIO
     # ==========================================================
-    with st.spinner("Compilazione tensori statistici in corso..."):
+    with st.spinner("Computazione matrici statistiche..."):
         df_regime_prices = get_cached_regime_data()
         df_matrix, dominant_regime, conf_pct = calculate_regime_matrix(df_regime_prices)
         risk_metrics, risk_err = calculate_risk_propensity(df)
@@ -171,17 +179,17 @@ def render_page1():
     
     with col_q1:
         st.markdown(f"""
-        <div style="background-color:#1e293b; padding:20px; border-radius:8px; border: 1px solid #334155; margin-bottom: 20px;">
-            <h4 style="color:#94a3b8; margin-top:0; font-size:12px; text-transform:uppercase;">Regime Economico Predominante</h4>
-            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top: 20px;">
+        <div style="background-color:#1e293b; padding:24px; border-radius:8px; border: 1px solid #334155;">
+            <h4 style="color:#94a3b8; margin-top:0; font-size:11px; font-weight: 600; text-transform:uppercase; letter-spacing: 1px;">Regime Economico Predominante</h4>
+            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top: 24px;">
                 <div>
-                    <span style="color:#f8fafc; font-size:20px; font-weight:bold; text-transform:uppercase;">{dominant_regime}</span>
+                    <span style="color:#f8fafc; font-size:22px; font-weight:800; text-transform:uppercase;">{dominant_regime}</span>
                 </div>
                 <div style="text-align:right;">
-                    <span style="color:#f59e0b; font-size:24px; font-weight:bold;">{conf_pct}%</span>
+                    <span style="color:#f59e0b; font-size:26px; font-weight:800;">{conf_pct}%</span>
                 </div>
             </div>
-            <div style="margin-top:15px; height:6px; width:100%; background: linear-gradient(90deg, #ef4444 0%, #f59e0b 50%, #10b981 100%); border-radius:4px;"></div>
+            <div style="margin-top:20px; height:6px; width:100%; background: linear-gradient(90deg, #ef4444 0%, #f59e0b 50%, #10b981 100%); border-radius:4px;"></div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -196,27 +204,29 @@ def render_page1():
             r_color = "#10b981" if r_status == "RISK ON" else ("#ef4444" if r_status == "RISK OFF" else "#f59e0b")
             
         st.markdown(f"""
-        <div style="background-color:#1e293b; padding:20px; border-radius:8px; border: 1px solid #334155; margin-bottom: 20px;">
-            <h4 style="color:#94a3b8; margin-top:0; font-size:12px; text-transform:uppercase;">Propensione al Rischio (Statistica)</h4>
-            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top: 20px;">
+        <div style="background-color:#1e293b; padding:24px; border-radius:8px; border: 1px solid #334155;">
+            <h4 style="color:#94a3b8; margin-top:0; font-size:11px; font-weight: 600; text-transform:uppercase; letter-spacing: 1px;">Propensione al Rischio (Z-Score)</h4>
+            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top: 24px;">
                 <div>
-                    <span style="color:{r_color}; font-size:20px; font-weight:bold; text-transform:uppercase;">{r_status}</span>
+                    <span style="color:{r_color}; font-size:22px; font-weight:800; text-transform:uppercase;">{r_status}</span>
                 </div>
                 <div style="text-align:right;">
-                    <span style="color:#f59e0b; font-size:24px; font-weight:bold;">{r_on}%</span>
+                    <span style="color:#10b981; font-size:26px; font-weight:800;">{r_on}%</span>
                 </div>
             </div>
-            <div style="margin-top:15px; display:flex; border-radius:4px; overflow:hidden; height:6px;">
+            <div style="margin-top:20px; display:flex; border-radius:4px; overflow:hidden; height:6px;">
                 <div style="width:{r_off}%; background-color:#ef4444;"></div>
                 <div style="width:{r_on}%; background-color:#10b981;"></div>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
+    st.write("")
+    
     # ==========================================================
     # MATRICE HEATMAP
     # ==========================================================
-    st.subheader("🗺️ Matrice dei Regimi di Mercato")
+    st.markdown("### 🗺️ Matrice dei Regimi di Mercato (Heatmap)")
 
     if not df_matrix.empty:
         fig_hm = go.Figure(data=go.Heatmap(
@@ -224,44 +234,44 @@ def render_page1():
             x=df_matrix.columns,
             y=df_matrix.index,
             colorscale=[
-                [0.0, '#b91c1c'],
-                [0.4, '#f87171'],
-                [0.5, '#fef08a'],
-                [0.6, '#4ade80'],
-                [1.0, '#15803d']
+                [0.0, '#7f1d1d'], # Rosso Scuro
+                [0.4, '#ef4444'], # Rosso
+                [0.5, '#fef08a'], # Giallo Neutro
+                [0.6, '#22c55e'], # Verde
+                [1.0, '#14532d']  # Verde Scuro
             ],
             zmid=0.0,
             text=df_matrix.map(lambda x: f"{x:+.2f}%" if not pd.isna(x) else "N/D").values,
             texttemplate="%{text}",
             showscale=False,
-            xgap=1, ygap=1
+            xgap=2, ygap=2
         ))
         
         fig_hm.update_layout(
             template='plotly_dark', 
-            margin=dict(l=0, r=0, t=30, b=0),
-            height=400,
-            xaxis=dict(side='top', tickfont=dict(size=11, color="#94a3b8")),
-            yaxis=dict(tickfont=dict(size=10, color="#f8fafc"), autorange="reversed"),
+            margin=dict(l=0, r=0, t=10, b=0),
+            height=420,
+            xaxis=dict(side='top', tickfont=dict(size=12, color="#94a3b8")),
+            yaxis=dict(tickfont=dict(size=11, color="#f8fafc"), autorange="reversed"),
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)'
         )
         st.plotly_chart(fig_hm, use_container_width=True)
     else:
-        st.warning("⚠️ Dati insufficienti per il calcolo della Matrice dei Regimi.")
+        st.warning("⚠️ Dati insufficienti per renderizzare la matrice dei regimi.")
 
     st.divider()
 
     # ==========================================================
-    # MODULO B: CICLO ECONOMICO E HARD VETO
+    # MODULO CICLO ECONOMICO E HARD VETO
     # ==========================================================
-    st.subheader("🧭 Posizionamento nel Ciclo Economico")
-    with st.spinner("Estrazione dati Federal Reserve e computo delle pendenze..."):
+    st.markdown("### 🧭 Posizionamento nel Ciclo Economico")
+    with st.spinner("Estrazione tassi e computo regressioni lineari..."):
         df_macro = get_cached_macro_data()
         fase_attuale, raw_phase, veto_applied, macro_metrics = calculate_macro_cycle_phase(df_macro, dominant_regime)
 
     if veto_applied:
-        st.warning(f"⚠️ VETO DI SISTEMA ATTIVO: L'algoritmo economico matematico indicava '{raw_phase}'. L'output è stato forzato a '{fase_attuale}' a causa del regime dominante '{dominant_regime}'.")
+        st.warning(f"⚠️ VETO ALGORITMICO APPLICATO: Calcolo base '{raw_phase}' invalidato. Fase forzata a '{fase_attuale}' per allineamento al regime predominante '{dominant_regime}'.")
 
     if fase_attuale != "DATI INSUFFICIENTI":
         quad_cols = st.columns(4)
@@ -269,14 +279,14 @@ def render_page1():
         for i, fase in enumerate(fasi_ciclo):
             with quad_cols[i]:
                 is_active = (fase.lower() == fase_attuale.lower())
-                bg_color = "#00CC96" if is_active else "transparent"
-                border_color = "#00CC96" if is_active else "#334155"
+                bg_color = "#0f766e" if is_active else "transparent"
+                border_color = "#14b8a6" if is_active else "#334155"
                 text_color = "#ffffff" if is_active else "#64748b"
                 
                 st.markdown(
                     f"""
-                    <div style="background-color: {bg_color}; padding: 15px; border-radius: 6px; text-align: center; border: 1px solid {border_color};">
-                        <h4 style="color: {text_color}; margin: 0; font-size: 14px; text-transform: uppercase;">{fase}</h4>
+                    <div style="background-color: {bg_color}; padding: 16px; border-radius: 6px; text-align: center; border: 1px solid {border_color};">
+                        <h4 style="color: {text_color}; margin: 0; font-size: 14px; font-weight: 700; text-transform: uppercase;">{fase}</h4>
                     </div>
                     """, unsafe_allow_html=True
                 )
@@ -287,40 +297,40 @@ def render_page1():
         mc3.metric("Z-Score Tassi Reali", f"{macro_metrics.get('Z_Score_Tassi_Reali', 0):+.2f} σ")
         mc4.metric("Z-Score 30Y Treasury", f"{macro_metrics.get('Z_Score_30Y_Yield', 0):+.2f} σ")
     else:
-        st.warning("⚠️ Dati istituzionali insufficienti per il calcolo del ciclo economico.")
+        st.warning("⚠️ Dati macro insufficienti per il calcolo delle fasi del ciclo.")
 
     st.divider()
 
     # ==========================================================
-    # GRAFICI MACRO (Layout Minimale Quant)
+    # GRAFICI MACRO (Renderizzazione Nuda)
     # ==========================================================
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("1. Liquidità Netta Estesa")
+        st.markdown("<h4 style='font-size:15px; color:#94a3b8;'>1. Liquidità Netta Estesa</h4>", unsafe_allow_html=True)
         if 'Net_Liquidity' in df.columns and not df['Net_Liquidity'].dropna().empty:
-            st.plotly_chart(px.area(df.dropna(subset=['Net_Liquidity']).tail(250), x="Data", y="Net_Liquidity", color_discrete_sequence=['#00CC96'], template='plotly_dark'), use_container_width=True)
+            st.plotly_chart(px.area(df.dropna(subset=['Net_Liquidity']).tail(250), x="Data", y="Net_Liquidity", color_discrete_sequence=['#14b8a6'], template='plotly_dark'), use_container_width=True)
     with c2:
-        st.subheader("2. M2 Money Supply")
+        st.markdown("<h4 style='font-size:15px; color:#94a3b8;'>2. M2 Money Supply</h4>", unsafe_allow_html=True)
         if 'M2' in df.columns and not df['M2'].dropna().empty:
             st.plotly_chart(px.line(df.dropna(subset=['M2']).tail(250), x="Data", y="M2", template='plotly_dark'), use_container_width=True)
 
     c3, c4 = st.columns(2)
     with c3:
-        st.subheader("3. Modello GOLD / OIL")
+        st.markdown("<h4 style='font-size:15px; color:#94a3b8;'>3. Modello GOLD / OIL</h4>", unsafe_allow_html=True)
         if 'Ratio_GO' in df.columns and not df['Ratio_GO'].dropna().empty:
-            fig_go = px.line(df.dropna(subset=['Ratio_GO']).tail(100), x="Data", y="Ratio_GO", color_discrete_sequence=['#FFD700'], template='plotly_dark')
-            fig_go.add_hline(y=2.5, line_dash="dash", line_color="red")
+            fig_go = px.line(df.dropna(subset=['Ratio_GO']).tail(100), x="Data", y="Ratio_GO", color_discrete_sequence=['#fbbf24'], template='plotly_dark')
+            fig_go.add_hline(y=2.5, line_dash="dash", line_color="#ef4444")
             st.plotly_chart(fig_go, use_container_width=True)
     with c4:
-        st.subheader("4. Tassi vs Volatilità (TLT/MOVE)")
+        st.markdown("<h4 style='font-size:15px; color:#94a3b8;'>4. Tassi vs Volatilità (TLT/MOVE)</h4>", unsafe_allow_html=True)
         if set(['TLT', 'MOVE']).issubset(df.columns):
             temp_df = df.dropna(subset=['TLT', 'MOVE']).tail(100)
             if not temp_df.empty:
-                st.plotly_chart(px.line(temp_df, x="Data", y=["TLT", "MOVE"], color_discrete_map={"TLT": "yellow", "MOVE": "red"}, template='plotly_dark'), use_container_width=True)
+                st.plotly_chart(px.line(temp_df, x="Data", y=["TLT", "MOVE"], color_discrete_map={"TLT": "#fbbf24", "MOVE": "#ef4444"}, template='plotly_dark'), use_container_width=True)
 
     st.divider()
     
-    st.subheader("Tabella Master EOD")
+    st.markdown("### Tabella Master EOD")
     display_df = df.sort_values("Data", ascending=False).head(30).copy()
     display_df['Data'] = display_df['Data'].dt.strftime('%Y-%m-%d')
     st.dataframe(display_df, use_container_width=True, hide_index=True)
