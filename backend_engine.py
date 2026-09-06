@@ -18,7 +18,7 @@ COLUMNS = [
     "Net_Liquidity", "M2"
 ]
 
-# MATRICE RIGOROSA: Ticker e Nomenclatura allineati al Foglio Google originario
+# MATRICE RIGOROSA: Nomenclatura e Composizione allineata al database originario
 REGIME_BASKETS = {
     "GOLDILOCKS ECONOMY": ["QQQ", "XLK", "XLY", "IEF", "SMH"],
     "RECESSION": ["TLT", "SHY", "XLU", "XLP", "GLD"],
@@ -32,9 +32,9 @@ REGIME_BASKETS = {
     "DEBASEMENT (SENZA BITCOIN)": ["GLD", "XME", "COPX", "EEM", "VDST.MI"]
 }
 
-# ALLINEAMENTO MATEMATICO A GOOGLE FINANCE: Utilizzo di Offset di Calendario e non Trading Days
+# OFFSET DI CALENDARIO: Simula la logica OGGI() - X
 TIMEFRAMES_CALENDAR = {
-    "Δ 1D": "session", # Candela precedente
+    "Δ 1D": "session", 
     "Δ 1W": pd.DateOffset(days=7),
     "Δ 1M": pd.DateOffset(months=1),
     "Δ 3M": pd.DateOffset(months=3),
@@ -46,7 +46,7 @@ TIMEFRAMES_CALENDAR = {
 }
 
 # ==========================================================
-# FASE 1: FETCHING DATI - ANTI ALLUCINAZIONE
+# FASE 1: FETCHING DATI EOD - ANTI ALLUCINAZIONE
 # ==========================================================
 def load_db():
     if os.path.exists(DB_FILE):
@@ -151,13 +151,13 @@ def calculate_rolling_zscore(series, window=252):
 
 
 # ==========================================================
-# FASE 2: MATRICE REGIMI (Allineamento Calendario Fogli Google)
+# FASE 2: MATRICE REGIMI (Prezzi Rettificati e Modello Calendario)
 # ==========================================================
 def fetch_regime_baskets_data(period="10y"):
     try:
         unique_tickers = sorted(list({ticker for basket in REGIME_BASKETS.values() for ticker in basket}))
-        # Imposto auto_adjust=False per prelevare il RAW Close (identico a Google Finance)
-        data = yf.download(tickers=unique_tickers, period=period, interval="1d", auto_adjust=False, progress=False)
+        # RIGORE MATEMATICO: auto_adjust=True inibisce i crolli da frazionamento azionario (Split)
+        data = yf.download(tickers=unique_tickers, period=period, interval="1d", auto_adjust=True, progress=False)
         if data.empty: return pd.DataFrame()
         
         if isinstance(data.columns, pd.MultiIndex):
@@ -198,13 +198,13 @@ def calculate_regime_matrix(df_prices):
                 target_date = last_date - offset
                 past_slice = basket_prices.loc[:target_date]
                 if not past_slice.empty:
-                    p_past = past_slice.iloc[-1] # Prende l'ultimo dato utile prima della data esatta del calendario
+                    p_past = past_slice.iloc[-1]
                 else:
                     p_past = pd.Series(np.nan, index=basket_prices.columns)
             
-            # Calcolo percentuale individuale
+            # Calcolo percentuale individuale e Drop dei NaN (Equivale alla Media Aritmetica di Fogli Google)
             roc_individual_assets = ((p_now - p_past) / p_past) * 100.0
-            valid_roc = roc_individual_assets.dropna() # Simula la funzione =MEDIA() di Google ignorando le celle N/A
+            valid_roc = roc_individual_assets.dropna() 
             
             if not valid_roc.empty:
                 row_data[tf_label] = float(valid_roc.mean())
@@ -220,6 +220,7 @@ def calculate_regime_matrix(df_prices):
     confidence_pct = 0.0
     dominant = "N/D"
 
+    # Z-Score Softmax per classificazione probabilistica del Leader
     if "Δ 1W" in df_matrix.columns and "Δ 1M" in df_matrix.columns:
         momentum_score = (df_matrix["Δ 1W"] + df_matrix["Δ 1M"]) / 2.0
         m_valid = momentum_score.dropna()
@@ -236,7 +237,7 @@ def calculate_regime_matrix(df_prices):
     return df_matrix.round(2), dominant, confidence_pct
 
 # ==========================================================
-# FASE 3: CICLO ECONOMICO
+# FASE 3: MOTORE CICLO ECONOMICO
 # ==========================================================
 def fetch_macro_cycle_data():
     end_date = datetime.now()
