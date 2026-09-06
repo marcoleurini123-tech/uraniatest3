@@ -18,7 +18,7 @@ COLUMNS = [
     "Net_Liquidity", "M2"
 ]
 
-# MATRICE RIGOROSA: Nomenclatura e Composizione allineata al database originario
+# MATRICE RIGOROSA: Nomenclatura e Ticker allineati al database originario
 REGIME_BASKETS = {
     "GOLDILOCKS ECONOMY": ["QQQ", "XLK", "XLY", "IEF", "SMH"],
     "RECESSION": ["TLT", "SHY", "XLU", "XLP", "GLD"],
@@ -32,7 +32,7 @@ REGIME_BASKETS = {
     "DEBASEMENT (SENZA BITCOIN)": ["GLD", "XME", "COPX", "EEM", "VDST.MI"]
 }
 
-# Standardizzazione Quantitativa: Lookback in Giorni di Borsa Effettivi (Trading Days)
+# STANDARD QUANTITATIVO: Orizzonti temporali basati sui giorni di borsa effettivi (Trading Days)
 TIMEFRAMES = {
     "Δ 1D": 1, "Δ 1W": 5, "Δ 1M": 21, "Δ 3M": 63, 
     "Δ 6M": 126, "Δ 1Y": 252, "Δ 2Y": 504, "Δ 3Y": 756, "Δ 5Y": 1260
@@ -144,16 +144,16 @@ def calculate_rolling_zscore(series, window=252):
 
 
 # ==========================================================
-# FASE 2: MATRICE REGIMI (Rigore Price Return)
+# FASE 2: MATRICE REGIMI (Combinazione Esatta Price Return + Trading Days)
 # ==========================================================
 def fetch_regime_baskets_data(period="10y"):
     try:
         unique_tickers = sorted(list({ticker for basket in REGIME_BASKETS.values() for ticker in basket}))
-        # ERADICAZIONE TOTAL RETURN: auto_adjust=False garantisce l'uso del Price Return per pareggiare Fogli Google
+        # MATEMATICA CRUDA: auto_adjust=False forza l'uso del Price Return per replicare GOOGLEFINANCE()
         data = yf.download(tickers=unique_tickers, period=period, interval="1d", auto_adjust=False, progress=False)
         if data.empty: return pd.DataFrame()
         
-        # Estrazione chirurgica della colonna 'Close' (Rettificata per split, NON per dividendi)
+        # Estrazione esclusiva della colonna "Close" (Aggiustata per gli split azionari ma non per i dividendi)
         if isinstance(data.columns, pd.MultiIndex):
             if "Close" in data.columns.levels[0]: df = data["Close"].copy()
             else: df = data.xs("Close", axis=1, level=0).copy()
@@ -183,10 +183,11 @@ def calculate_regime_matrix(df_prices):
         for tf_label, days in TIMEFRAMES.items():
             if len(basket_prices) > days:
                 p_now = basket_prices.iloc[-1]
+                # Retrocessione rigorosa dell'indice per numero di sessioni di borsa
                 p_past = basket_prices.iloc[-(days + 1)]
                 
                 roc_individual_assets = ((p_now - p_past) / p_past) * 100.0
-                valid_roc = roc_individual_assets.dropna() # Simula =MEDIA() ignorando celle N/A
+                valid_roc = roc_individual_assets.dropna() # Ignora asset mancanti (es. ETF recenti) simulando =MEDIA()
                 
                 if not valid_roc.empty:
                     row_data[tf_label] = float(valid_roc.mean())
