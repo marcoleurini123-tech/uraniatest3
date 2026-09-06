@@ -18,7 +18,7 @@ COLUMNS = [
     "Net_Liquidity", "M2"
 ]
 
-# MATRICE RIGOROSA: Ticker allineati al Foglio Google (con VDST.MI per Borsa Italiana)
+# MATRICE RIGOROSA: Ticker e Nomenclatura allineati al Foglio Google originario
 REGIME_BASKETS = {
     "GOLDILOCKS ECONOMY": ["QQQ", "XLK", "XLY", "IEF", "SMH"],
     "RECESSION": ["TLT", "SHY", "XLU", "XLP", "GLD"],
@@ -32,14 +32,21 @@ REGIME_BASKETS = {
     "DEBASEMENT (SENZA BITCOIN)": ["GLD", "XME", "COPX", "EEM", "VDST.MI"]
 }
 
-# Traduzione orizzonti in Trading Days
-TIMEFRAMES = {
-    "Δ 1D": 1, "Δ 1W": 5, "Δ 1M": 21, "Δ 3M": 63, 
-    "Δ 6M": 126, "Δ 1Y": 252, "Δ 2Y": 504, "Δ 3Y": 756, "Δ 5Y": 1260
+# ALLINEAMENTO MATEMATICO A GOOGLE FINANCE: Utilizzo di Offset di Calendario e non Trading Days
+TIMEFRAMES_CALENDAR = {
+    "Δ 1D": "session", # Candela precedente
+    "Δ 1W": pd.DateOffset(days=7),
+    "Δ 1M": pd.DateOffset(months=1),
+    "Δ 3M": pd.DateOffset(months=3),
+    "Δ 6M": pd.DateOffset(months=6),
+    "Δ 1Y": pd.DateOffset(years=1),
+    "Δ 2Y": pd.DateOffset(years=2),
+    "Δ 3Y": pd.DateOffset(years=3),
+    "Δ 5Y": pd.DateOffset(years=5)
 }
 
 # ==========================================================
-# FETCHING DATI - ANTI ALLUCINAZIONE
+# FASE 1: FETCHING DATI - ANTI ALLUCINAZIONE
 # ==========================================================
 def load_db():
     if os.path.exists(DB_FILE):
@@ -144,12 +151,12 @@ def calculate_rolling_zscore(series, window=252):
 
 
 # ==========================================================
-# MODULO A: MATRICE REGIMI E SOFTMAX PROBABILITA'
+# FASE 2: MATRICE REGIMI (Allineamento Calendario Fogli Google)
 # ==========================================================
 def fetch_regime_baskets_data(period="10y"):
     try:
         unique_tickers = sorted(list({ticker for basket in REGIME_BASKETS.values() for ticker in basket}))
-        # ERRORE FIXATO: auto_adjust=False per prelevare il RAW Close (esattamente come Google Finance)
+        # Imposto auto_adjust=False per prelevare il RAW Close (identico a Google Finance)
         data = yf.download(tickers=unique_tickers, period=period, interval="1d", auto_adjust=False, progress=False)
         if data.empty: return pd.DataFrame()
         
@@ -167,24 +174,40 @@ def fetch_regime_baskets_data(period="10y"):
         return pd.DataFrame()
 
 def calculate_regime_matrix(df_prices):
-    if df_prices.empty or len(df_prices) < 63:
+    if df_prices.empty or len(df_prices) < 5:
         return pd.DataFrame(), "Dati Insufficienti", 0.0
 
     matrix = []
+    last_date = df_prices.index[-1]
+    
     for regime, tickers in REGIME_BASKETS.items():
         valid_tickers = [t for t in tickers if t in df_prices.columns]
         if not valid_tickers: continue
         
         basket_prices = df_prices[valid_tickers].ffill()
+        p_now = basket_prices.iloc[-1]
         row_data = {"Regime": regime}
         
-        for tf_label, days in TIMEFRAMES.items():
-            if len(basket_prices) > days:
-                p_now = basket_prices.iloc[-1]
-                p_past = basket_prices.iloc[-(days + 1)]
-                
-                roc_individual_assets = ((p_now - p_past) / p_past) * 100.0
-                row_data[tf_label] = float(roc_individual_assets.mean())
+        for tf_label, offset in TIMEFRAMES_CALENDAR.items():
+            if tf_label == "Δ 1D":
+                if len(basket_prices) >= 2:
+                    p_past = basket_prices.iloc[-2]
+                else:
+                    p_past = pd.Series(np.nan, index=basket_prices.columns)
+            else:
+                target_date = last_date - offset
+                past_slice = basket_prices.loc[:target_date]
+                if not past_slice.empty:
+                    p_past = past_slice.iloc[-1] # Prende l'ultimo dato utile prima della data esatta del calendario
+                else:
+                    p_past = pd.Series(np.nan, index=basket_prices.columns)
+            
+            # Calcolo percentuale individuale
+            roc_individual_assets = ((p_now - p_past) / p_past) * 100.0
+            valid_roc = roc_individual_assets.dropna() # Simula la funzione =MEDIA() di Google ignorando le celle N/A
+            
+            if not valid_roc.empty:
+                row_data[tf_label] = float(valid_roc.mean())
             else:
                 row_data[tf_label] = np.nan
                 
@@ -213,7 +236,7 @@ def calculate_regime_matrix(df_prices):
     return df_matrix.round(2), dominant, confidence_pct
 
 # ==========================================================
-# MODULO B: CICLO ECONOMICO
+# FASE 3: CICLO ECONOMICO
 # ==========================================================
 def fetch_macro_cycle_data():
     end_date = datetime.now()
@@ -283,7 +306,7 @@ def calculate_macro_cycle_phase(df_macro, predominant_regime):
     return final_phase, raw_phase, veto_applied, metrics
 
 # ==========================================================
-# MODULO C: PROPENSIONE AL RISCHIO E HARD OVERRIDE
+# FASE 4: PROPENSIONE AL RISCHIO E HARD OVERRIDE
 # ==========================================================
 def calculate_risk_propensity(df_master):
     if df_master.empty or len(df_master) < 252:
