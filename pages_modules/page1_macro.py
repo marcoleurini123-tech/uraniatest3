@@ -21,12 +21,24 @@ def get_cached_macro_data():
     return fetch_macro_cycle_data()
 
 def render_page1():
-    # CSS Iniettato: Forza contrasto bianco sulle cifre e stabilizza i pannelli
+    # CSS Iniettato: Penetrazione profonda nel DOM per forzare il contrasto di valori ed etichette
     st.markdown("""
     <style>
         .stApp { background-color: #0b1121; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-        div[data-testid="stMetricValue"] { color: #ffffff !important; font-size: 1.6rem; font-weight: 700; }
-        div[data-testid="stMetricLabel"] { color: #94a3b8 !important; font-weight: 600; font-size: 0.85rem; text-transform: uppercase; }
+        
+        /* Cifre Metriche Principali */
+        div[data-testid="stMetricValue"] { color: #ffffff !important; font-size: 1.7rem !important; font-weight: 800 !important; }
+        
+        /* Etichette Metriche (Risoluzione bug illeggibilità tramite selettore discendente) */
+        div[data-testid="stMetricLabel"], 
+        div[data-testid="stMetricLabel"] * { 
+            color: #cbd5e1 !important; 
+            font-weight: 700 !important; 
+            font-size: 0.9rem !important; 
+            text-transform: uppercase; 
+            letter-spacing: 0.5px; 
+        }
+        
         hr { border-color: #1e293b; margin-top: 2rem; margin-bottom: 2rem; }
     </style>
     """, unsafe_allow_html=True)
@@ -65,14 +77,14 @@ def render_page1():
                 if m_gex != 0: df.at[idx, 'GEX'] = m_gex
                 
                 save_db(df)
-                st.success(f"Sessione {dt.strftime('%Y-%m-%d')} registrata con successo.")
+                st.success(f"Sessione {dt.strftime('%Y-%m-%d')} registrata con rigore.")
                 st.rerun()
 
         st.divider()
         st.header("🔄 Fetch Istituzionale")
         
         if st.button("2. SINCRONIZZA FLUSSI API", use_container_width=True):
-            with st.spinner("Estrazione ed allineamento matrici temporali..."):
+            with st.spinner("Estrazione ed allineamento tensori temporali in corso..."):
                 d_y = fetch_yahoo_data(365)
                 d_b = fetch_bridge_data()
                 d_sq = fetch_squeezemetrics_data()
@@ -98,7 +110,7 @@ def render_page1():
                 st.rerun()
 
     if df.empty:
-        st.warning("⚠️ Database locale vuoto. Procedere con la sincronizzazione dei flussi API.")
+        st.warning("⚠️ Database locale vuoto. Procedere con l'inizializzazione dei flussi API.")
         return
 
     # Normalizzazione Dataset EOD
@@ -182,7 +194,7 @@ def render_page1():
     with col_q1:
         st.markdown(f"""
         <div style="background-color:#1e293b; padding:24px; border-radius:8px; border: 1px solid #334155;">
-            <h4 style="color:#94a3b8; margin-top:0; font-size:11px; font-weight: 600; text-transform:uppercase; letter-spacing: 1px;">Regime Economico Predominante</h4>
+            <h4 style="color:#cbd5e1; margin-top:0; font-size:11px; font-weight: 700; text-transform:uppercase; letter-spacing: 1px;">Regime Economico Predominante</h4>
             <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top: 24px;">
                 <div>
                     <span style="color:#ffffff; font-size:22px; font-weight:800; text-transform:uppercase;">{dominant_regime}</span>
@@ -207,7 +219,7 @@ def render_page1():
             
         st.markdown(f"""
         <div style="background-color:#1e293b; padding:24px; border-radius:8px; border: 1px solid #334155;">
-            <h4 style="color:#94a3b8; margin-top:0; font-size:11px; font-weight: 600; text-transform:uppercase; letter-spacing: 1px;">Propensione al Rischio (Z-Score Storico)</h4>
+            <h4 style="color:#cbd5e1; margin-top:0; font-size:11px; font-weight: 700; text-transform:uppercase; letter-spacing: 1px;">Propensione al Rischio (Z-Score Storico)</h4>
             <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top: 24px;">
                 <div>
                     <span style="color:{r_color}; font-size:22px; font-weight:800; text-transform:uppercase;">{r_status}</span>
@@ -226,7 +238,7 @@ def render_page1():
     st.write("")
     
     # ==========================================================
-    # MATRICE HEATMAP (Color scale stabilita)
+    # MATRICE HEATMAP
     # ==========================================================
     st.markdown("### 🗺️ Matrice dei Regimi di Mercato")
 
@@ -253,7 +265,7 @@ def render_page1():
             template='plotly_dark', 
             margin=dict(l=0, r=0, t=10, b=0),
             height=420,
-            xaxis=dict(side='top', tickfont=dict(size=12, color="#94a3b8")),
+            xaxis=dict(side='top', tickfont=dict(size=12, color="#cbd5e1")),
             yaxis=dict(tickfont=dict(size=11, color="#f8fafc"), autorange="reversed"),
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)'
@@ -308,23 +320,23 @@ def render_page1():
     # ==========================================================
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("<h4 style='font-size:15px; color:#94a3b8; font-weight: 600;'>1. Liquidità Netta Estesa</h4>", unsafe_allow_html=True)
+        st.markdown("<h4 style='font-size:15px; color:#cbd5e1; font-weight: 600;'>1. Liquidità Netta Estesa</h4>", unsafe_allow_html=True)
         if 'Net_Liquidity' in df.columns and not df['Net_Liquidity'].dropna().empty:
             st.plotly_chart(px.area(df.dropna(subset=['Net_Liquidity']).tail(250), x="Data", y="Net_Liquidity", color_discrete_sequence=['#14b8a6'], template='plotly_dark'), use_container_width=True)
     with c2:
-        st.markdown("<h4 style='font-size:15px; color:#94a3b8; font-weight: 600;'>2. M2 Money Supply</h4>", unsafe_allow_html=True)
+        st.markdown("<h4 style='font-size:15px; color:#cbd5e1; font-weight: 600;'>2. M2 Money Supply</h4>", unsafe_allow_html=True)
         if 'M2' in df.columns and not df['M2'].dropna().empty:
             st.plotly_chart(px.line(df.dropna(subset=['M2']).tail(250), x="Data", y="M2", template='plotly_dark'), use_container_width=True)
 
     c3, c4 = st.columns(2)
     with c3:
-        st.markdown("<h4 style='font-size:15px; color:#94a3b8; font-weight: 600;'>3. Modello GOLD / OIL</h4>", unsafe_allow_html=True)
+        st.markdown("<h4 style='font-size:15px; color:#cbd5e1; font-weight: 600;'>3. Modello GOLD / OIL</h4>", unsafe_allow_html=True)
         if 'Ratio_GO' in df.columns and not df['Ratio_GO'].dropna().empty:
             fig_go = px.line(df.dropna(subset=['Ratio_GO']).tail(100), x="Data", y="Ratio_GO", color_discrete_sequence=['#fbbf24'], template='plotly_dark')
             fig_go.add_hline(y=2.5, line_dash="dash", line_color="#ef4444")
             st.plotly_chart(fig_go, use_container_width=True)
     with c4:
-        st.markdown("<h4 style='font-size:15px; color:#94a3b8; font-weight: 600;'>4. Tassi vs Volatilità (TLT/MOVE)</h4>", unsafe_allow_html=True)
+        st.markdown("<h4 style='font-size:15px; color:#cbd5e1; font-weight: 600;'>4. Tassi vs Volatilità (TLT/MOVE)</h4>", unsafe_allow_html=True)
         if set(['TLT', 'MOVE']).issubset(df.columns):
             temp_df = df.dropna(subset=['TLT', 'MOVE']).tail(100)
             if not temp_df.empty:
