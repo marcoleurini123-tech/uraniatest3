@@ -21,22 +21,29 @@ def get_cached_macro_data():
     return fetch_macro_cycle_data()
 
 def render_page1():
-    # CSS Iniettato: Penetrazione profonda nel DOM per forzare il contrasto di valori ed etichette
+    # CSS Iniettato: Forzatura gerarchica assoluta sui nodi testuali del DOM di Streamlit
     st.markdown("""
     <style>
         .stApp { background-color: #0b1121; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
         
         /* Cifre Metriche Principali */
-        div[data-testid="stMetricValue"] { color: #ffffff !important; font-size: 1.7rem !important; font-weight: 800 !important; }
+        div[data-testid="stMetricValue"] { 
+            color: #ffffff !important; 
+            font-size: 1.7rem !important; 
+            font-weight: 800 !important; 
+        }
         
-        /* Etichette Metriche (Risoluzione bug illeggibilità tramite selettore discendente) */
-        div[data-testid="stMetricLabel"], 
-        div[data-testid="stMetricLabel"] * { 
+        /* Etichette Metriche - Penetrazione profonda nei nodi figli per contrasto assoluto */
+        div[data-testid="stMetricLabel"],
+        div[data-testid="stMetricLabel"] > *,
+        div[data-testid="stMetricLabel"] p,
+        div[data-testid="stMetricLabel"] span,
+        div[data-testid="stMetricLabel"] label { 
             color: #cbd5e1 !important; 
             font-weight: 700 !important; 
             font-size: 0.9rem !important; 
-            text-transform: uppercase; 
-            letter-spacing: 0.5px; 
+            text-transform: uppercase !important; 
+            letter-spacing: 0.5px !important; 
         }
         
         hr { border-color: #1e293b; margin-top: 2rem; margin-bottom: 2rem; }
