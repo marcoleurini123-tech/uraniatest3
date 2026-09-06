@@ -9,14 +9,14 @@ from backend_engine import (
     fetch_squeezemetrics_data, fetch_cboe_pc_ratio, COLUMNS,
     fetch_regime_baskets_data, calculate_regime_matrix,
     fetch_macro_cycle_data, calculate_macro_cycle_phase,
-    calculate_risk_propensity
+    evaluate_risk_override
 )
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_cached_regime_data():
-    return fetch_regime_baskets_data(period="2y")
+    return fetch_regime_baskets_data(period="5y")
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_cached_macro_data():
     return fetch_macro_cycle_data()
 
@@ -90,7 +90,7 @@ def render_page1():
                 save_db(final_df)
                 
                 st.cache_data.clear()
-                st.success("Sincronizzazione completata con successo.")
+                st.success("Sincronizzazione completata.")
                 st.rerun()
 
     if df.empty:
@@ -108,10 +108,33 @@ def render_page1():
 
     last = df.iloc[-1]
 
-    if len(df) >= 5 and last.get('Liq_Delta_5D', 0) < 0 and last.get('SPY', 0) > df.iloc[-5].get('SPY', 0):
-        st.error(f"🚨 ALERT DIVERGENZA: Liquidità in calo ({last['Liq_Delta_5D']:.2f}%) mentre lo SPY sale. Pericolo di storno sistemico.")
+    # ==========================================================
+    # MODULO RISK MANAGEMENT: HARD OVERRIDE
+    # ==========================================================
+    is_risk_off, override_reasons, current_skew, current_vix = evaluate_risk_override(df)
 
-    st.subheader("🚦 Monitor Segnali di Regime")
+    if is_risk_off:
+        st.markdown(f"""
+        <div style="background-color: #490202; border: 2px solid #f85149; border-radius: 8px; padding: 16px; color: #ff7b72; margin-bottom: 20px;">
+            <h3 style="margin:0; color:#ff7b72;">🚨 HARD OVERRIDE ATTIVO: RISK OFF / PANICO ISTITUZIONALE</h3>
+            <p style="margin-top:8px; font-weight:bold;">BLOCCO OPERATIVO: Interrompere accumulo direzionale long. Anomalie strutturali rilevate.</p>
+            <hr style="border-color:#f85149; margin: 10px 0;">
+            <ul style="margin:0; padding-left:20px;">
+                {''.join([f'<li>{r}</li>' for r in override_reasons])}
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style="background-color: #04260f; border: 1px solid #238636; border-radius: 8px; padding: 14px; color: #3fb950; margin-bottom: 20px;">
+            <b>STATO PROPENSIONE AL RISCHIO: RISK ON / NEUTRO</b> — Parametri di liquidità e stress (SKEW/VIX) entro i limiti operativi.
+        </div>
+        """, unsafe_allow_html=True)
+
+    if len(df) >= 5 and last.get('Liq_Delta_5D', 0) < 0 and last.get('SPY', 0) > df.iloc[-5].get('SPY', 0):
+        st.error(f"🚨 DIVERGENZA: Liquidità in calo ({last['Liq_Delta_5D']:.2f}%) con SPY in rialzo.")
+
+    st.subheader("🚦 Monitor Segnali di Regime EOD")
     r1, r2 = st.columns(6), st.columns(6)
     
     dix_v = last.get('DIX', np.nan)
@@ -124,8 +147,7 @@ def render_page1():
     pc_status = "🟢 PANICO" if pc_v > 1.05 else ("🔴 AVIDITÀ" if 0 < pc_v < 0.7 else "⚪ NEUTRO")
     r1[2].metric("P/C RATIO", f"{pc_v:.2f}" if not pd.isna(pc_v) else "N/A", pc_status)
     
-    skew_v = last.get('SKEW', np.nan)
-    r1[3].metric("SKEW", f"{skew_v:.1f}" if not pd.isna(skew_v) else "N/A", "⚠️ BLACK SWAN" if skew_v > 145 else "🟢 OK", delta_color="inverse")
+    r1[3].metric("SKEW", f"{current_skew:.1f}" if not pd.isna(current_skew) else "N/A", "⚠️ CRITICO" if current_skew >= 140 else "🟢 OK", delta_color="inverse")
     
     move_v = last.get('MOVE', np.nan)
     r1[4].metric("MOVE", f"{move_v:.1f}" if not pd.isna(move_v) else "N/A", "🔴 STRESS BOND" if move_v > 115 else "🟢 CALMO", delta_color="inverse")
@@ -157,131 +179,99 @@ def render_page1():
     st.divider()
 
     # ==========================================================
-    # PANORAMICA MACRO E MERCATI (STILE QUANTASTE)
+    # MODULO A: MATRICE DEI REGIMI (CALCOLO MATEMATICO Z-SCORE)
     # ==========================================================
-    with st.spinner("Estrazione dati macro e calcolo probabilità statistiche..."):
+    with st.spinner("Calcolo tensori macro 5Y in corso..."):
         df_regime_prices = get_cached_regime_data()
-        df_matrix, dominant_regime, conf_pct = calculate_regime_matrix(df_regime_prices)
-        risk_metrics, risk_err = calculate_risk_propensity(df)
+        df_matrix, dominant_regime, z_combined = calculate_regime_matrix(df_regime_prices)
 
-    col_q1, col_q2 = st.columns(2)
+    col_q1, col_q2 = st.columns([1, 2])
     
     with col_q1:
+        z_score_display = z_combined.get(dominant_regime, np.nan) if not z_combined.empty else np.nan
         st.markdown(f"""
-        <div style="background-color:#0f172a; padding:20px; border-radius:8px; border: 1px solid #334155;">
-            <h4 style="color:#94a3b8; margin-top:0; font-size:14px; text-transform:uppercase;">Regime Economico Predominante</h4>
-            <div style="display:flex; justify-content:space-between; align-items:flex-end;">
-                <div>
-                    <span style="color:#64748b; font-size:12px;">REGIME DOMINANTE</span><br>
-                    <span style="color:#f8fafc; font-size:24px; font-weight:bold;">{dominant_regime}</span>
-                </div>
-                <div style="text-align:right;">
-                    <span style="color:#f59e0b; font-size:32px; font-weight:bold;">{conf_pct}%</span>
-                </div>
+        <div style="background-color:#0f172a; padding:20px; border-radius:8px; border: 1px solid #334155; height:100%;">
+            <h4 style="color:#94a3b8; margin-top:0; font-size:14px; text-transform:uppercase;">Regime Matematico Predominante</h4>
+            <div style="margin-top:20px;">
+                <span style="color:#64748b; font-size:12px;">ASSET CLASS LEADER</span><br>
+                <span style="color:#f8fafc; font-size:20px; font-weight:bold;">{dominant_regime}</span>
             </div>
-            <div style="margin-top:15px; height:8px; width:100%; background: linear-gradient(90deg, #ef4444 0%, #f59e0b 50%, #10b981 100%); border-radius:4px;"></div>
+            <div style="margin-top:10px;">
+                <span style="color:#64748b; font-size:12px;">Z-SCORE (1W + 1M)</span><br>
+                <span style="color:#f59e0b; font-size:28px; font-weight:bold;">{f"{z_score_display:+.2f} σ" if not pd.isna(z_score_display) else "N/D"}</span>
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
     with col_q2:
-        if risk_err:
-            r_status, r_on, r_off = "N/D", 0, 0
+        st.markdown("<h4 style='color:#94a3b8; font-size:14px; text-transform:uppercase;'>Matrice Ritorni Equipesati</h4>", unsafe_allow_html=True)
+        if not df_matrix.empty:
+            fig_hm = go.Figure(data=go.Heatmap(
+                z=df_matrix.values,
+                x=df_matrix.columns,
+                y=df_matrix.index,
+                colorscale=[[0.0, "#8b0000"], [0.5, "#161b22"], [1.0, "#00802b"]],
+                text=df_matrix.map(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/D").values,
+                texttemplate="%{text}",
+                showscale=False
+            ))
+            fig_hm.update_layout(
+                template='plotly_dark', 
+                margin=dict(l=0, r=0, t=0, b=0),
+                height=220,
+                xaxis=dict(side='top')
+            )
+            st.plotly_chart(fig_hm, use_container_width=True)
         else:
-            r_status = risk_metrics['Status']
-            r_on = risk_metrics['Risk_On_Pct']
-            r_off = risk_metrics['Risk_Off_Pct']
-            
-        r_color = "#10b981" if r_status == "RISK ON" else ("#ef4444" if r_status == "RISK OFF" else "#f59e0b")
-        
-        st.markdown(f"""
-        <div style="background-color:#0f172a; padding:20px; border-radius:8px; border: 1px solid #334155;">
-            <h4 style="color:#94a3b8; margin-top:0; font-size:14px; text-transform:uppercase;">Propensione al Rischio</h4>
-            <div style="display:flex; justify-content:space-between; align-items:flex-end;">
-                <div>
-                    <span style="color:#64748b; font-size:12px;">RISK ON / RISK OFF</span><br>
-                    <span style="color:{r_color}; font-size:24px; font-weight:bold;">{r_status}</span>
-                </div>
-                <div style="text-align:right;">
-                    <span style="color:#f59e0b; font-size:32px; font-weight:bold;">{r_on}%</span>
-                </div>
-            </div>
-            <div style="margin-top:15px; display:flex; border-radius:4px; overflow:hidden; height:8px;">
-                <div style="width:{r_off}%; background-color:#ef4444;"></div>
-                <div style="width:{r_on}%; background-color:#10b981;"></div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+            st.warning("⚠️ Dati insufficienti per il calcolo della Matrice dei Regimi.")
 
     st.divider()
 
     # ==========================================================
-    # MODULO A: MATRICE DEI 9 REGIMI MACRO
-    # ==========================================================
-    st.subheader("🗺️ Matrice dei Regimi di Mercato (Heatmap Z-Score)")
-
-    if not df_matrix.empty:
-        fig_hm = go.Figure(data=go.Heatmap(
-            z=df_matrix.values,
-            x=df_matrix.columns,
-            y=df_matrix.index,
-            colorscale='RdYlGn',
-            text=df_matrix.map(lambda x: f"{x:.2f}%" if not pd.isna(x) else "N/D").values,
-            texttemplate="%{text}",
-            showscale=False
-        ))
-        fig_hm.update_layout(
-            template='plotly_dark', 
-            margin=dict(l=10, r=10, t=10, b=10),
-            xaxis_title="Orizzonte Temporale",
-            yaxis_title="Regimi"
-        )
-        st.plotly_chart(fig_hm, use_container_width=True)
-    else:
-        st.warning("⚠️ Dati insufficienti per il calcolo della Matrice dei Regimi.")
-
-    st.divider()
-
-    # ==========================================================
-    # MODULO B: QUADRANTI DEL CICLO ECONOMICO
+    # MODULO B: QUADRANTI DEL CICLO ECONOMICO & VETO
     # ==========================================================
     st.subheader("🧭 Posizionamento nel Ciclo Economico")
     with st.spinner("Estrazione dati Federal Reserve e calcolo incroci macro..."):
         df_macro = get_cached_macro_data()
-        fase_attuale, macro_metrics = calculate_macro_cycle_phase(df_macro)
+        fase_attuale, raw_phase, veto_applied, macro_metrics = calculate_macro_cycle_phase(df_macro, dominant_regime)
+
+    if veto_applied:
+        st.warning(f"⚠️ VETO APPLICATO: Algoritmo base indicava '{raw_phase}', forzato a '{fase_attuale}' a causa del regime '{dominant_regime}'.")
 
     if fase_attuale != "DATI INSUFFICIENTI":
         quad_cols = st.columns(4)
-        fasi_ciclo = ["RIPRESA", "ESPANSIONE", "PICCO / STAGFLAZIONE", "CONTRAZIONE"]
+        fasi_ciclo = ["Ripresa", "Espansione", "Picco / Stagflazione", "Contrazione"]
 
         for i, fase in enumerate(fasi_ciclo):
             with quad_cols[i]:
-                bg_color = "#00CC96" if fase == fase_attuale else "transparent"
-                border_color = "#00CC96" if fase == fase_attuale else "#334155"
-                text_color = "#ffffff" if fase == fase_attuale else "#64748b"
+                is_active = (fase.lower() == fase_attuale.lower())
+                bg_color = "#00CC96" if is_active else "transparent"
+                border_color = "#00CC96" if is_active else "#334155"
+                text_color = "#ffffff" if is_active else "#64748b"
                 
                 st.markdown(
                     f"""
                     <div style="background-color: {bg_color}; padding: 15px; border-radius: 6px; text-align: center; border: 1px solid {border_color};">
-                        <h4 style="color: {text_color}; margin: 0; font-size: 16px;">{fase}</h4>
+                        <h4 style="color: {text_color}; margin: 0; font-size: 16px; text-transform: uppercase;">{fase}</h4>
                     </div>
                     """, 
                     unsafe_allow_html=True
                 )
         
-        st.markdown("<br>", unsafe_allow_html=True)
-        
+        st.write("")
         mc1, mc2, mc3, mc4 = st.columns(4)
-        mc1.metric("Spread 10Y-2Y", f"{macro_metrics.get('Spread_10Y_2Y', 0):.2f}%")
-        mc2.metric("Rame/Oro Trend", macro_metrics.get('Copper_Gold_Trend', 'N/D'))
-        mc3.metric("Tassi Reali (Z-Score)", f"{macro_metrics.get('Real_Rates_Z', 0):.2f}")
-        
-        debasement_status = "⚠️ ATTIVO" if macro_metrics.get('Debasement_Risk') else "🟢 INATTIVO"
-        mc4.metric("Rischio Debasement 30Y", debasement_status)
+        mc1.metric("Spread 10Y-2Y", f"{macro_metrics.get('Spread_10Y_2Y', 0):.2f} pts")
+        mc2.metric("Pendenza Rame/Oro (40D)", f"{macro_metrics.get('Pendenza_Cu_Au_40D', 0):+.3f}")
+        mc3.metric("Z-Score Tassi Reali", f"{macro_metrics.get('Z_Score_Tassi_Reali', 0):+.2f} σ")
+        mc4.metric("Z-Score 30Y Treasury", f"{macro_metrics.get('Z_Score_30Y_Yield', 0):+.2f} σ")
     else:
-        st.warning("⚠️ Dati FRED o Commodities insufficienti per inquadrare il ciclo economico.")
+        st.warning("⚠️ Dati FRED insufficienti per l'inquadramento del ciclo economico.")
 
     st.divider()
 
+    # ==========================================================
+    # CHARTS FINANZIARI
+    # ==========================================================
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("💹 1. Vera Liquidità Netta (Trend)")
