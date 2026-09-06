@@ -21,22 +21,24 @@ def get_cached_macro_data():
     return fetch_macro_cycle_data()
 
 def render_page1():
-    # CSS per il layout rigoroso Dark Mode e reset margini
+    # CSS Iniettato: Forza contrasto bianco sulle cifre e stabilizza i pannelli
     st.markdown("""
     <style>
-        .stApp { background-color: #0f172a; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-        div[data-testid="stMetricValue"] { font-size: 1.6rem; font-weight: 700; }
-        hr { border-color: #334155; margin-top: 2rem; margin-bottom: 2rem; }
+        .stApp { background-color: #0b1121; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        div[data-testid="stMetricValue"] { color: #ffffff !important; font-size: 1.6rem; font-weight: 700; }
+        div[data-testid="stMetricLabel"] { color: #94a3b8 !important; font-weight: 600; font-size: 0.85rem; text-transform: uppercase; }
+        hr { border-color: #1e293b; margin-top: 2rem; margin-bottom: 2rem; }
     </style>
     """, unsafe_allow_html=True)
 
+    st.title("🛡️ Terminale Macro Professionale")
     st.caption("Status: Online | Motore: Vettoriale")
     
     df = load_db()
 
     with st.sidebar:
         st.header("⚙️ Override Dati EOD")
-        st.caption("I dati immessi manualmente non verranno sovrascritti dal fetch API.")
+        st.caption("I dati immessi manualmente sovrascrivono il fetch API per la data selezionata.")
         
         with st.form("manual_entry"):
             m_date = st.date_input("Data Riferimento", datetime.now())
@@ -63,14 +65,14 @@ def render_page1():
                 if m_gex != 0: df.at[idx, 'GEX'] = m_gex
                 
                 save_db(df)
-                st.success(f"Sessione {dt.strftime('%Y-%m-%d')} registrata.")
+                st.success(f"Sessione {dt.strftime('%Y-%m-%d')} registrata con successo.")
                 st.rerun()
 
         st.divider()
         st.header("🔄 Fetch Istituzionale")
         
         if st.button("2. SINCRONIZZA FLUSSI API", use_container_width=True):
-            with st.spinner("Allineamento matrici temporali in corso..."):
+            with st.spinner("Estrazione ed allineamento matrici temporali..."):
                 d_y = fetch_yahoo_data(365)
                 d_b = fetch_bridge_data()
                 d_sq = fetch_squeezemetrics_data()
@@ -96,15 +98,15 @@ def render_page1():
                 st.rerun()
 
     if df.empty:
-        st.warning("⚠️ Database locale vuoto. Esegui la sincronizzazione API.")
+        st.warning("⚠️ Database locale vuoto. Procedere con la sincronizzazione dei flussi API.")
         return
 
-    # Normalizzazione Dataset
+    # Normalizzazione Dataset EOD
     df = df.sort_values("Data").reset_index(drop=True)
     num_cols = [c for c in COLUMNS if c != "Data" and c in df.columns]
     df[num_cols] = df[num_cols].ffill(limit=7)
 
-    # Indicatori Calcolati
+    # Indicatori Calcolati Matematicamente
     df['Liq_Delta_5D'] = df['Net_Liquidity'].pct_change(periods=5) * 100
     df['Ratio_GO'] = np.where(df['USO'] > 0, df['GLD'] / df['USO'], np.nan)
     df['Ratio_Risk'] = np.where(df['XLP'] > 0, df['XLY'] / df['XLP'], np.nan)
@@ -113,7 +115,7 @@ def render_page1():
     last = df.iloc[-1]
     
     # ==========================================================
-    # MODULO OVERRIDE E RISK MANAGEMENT (HARD STOP)
+    # MODULO RISK MANAGEMENT (HARD OVERRIDE)
     # ==========================================================
     is_risk_off, override_reasons, current_skew, current_vix = evaluate_risk_override(df)
 
@@ -121,15 +123,15 @@ def render_page1():
         st.markdown(f"""
         <div style="background-color: #450a0a; border: 1px solid #ef4444; border-radius: 6px; padding: 16px; margin-bottom: 24px;">
             <h3 style="margin:0; color:#ef4444; font-size: 1.2rem;">🚨 HARD OVERRIDE ATTIVO: RISK OFF / PANICO</h3>
-            <p style="margin-top:8px; color: #fca5a5; font-size: 0.9rem; font-weight:bold;">BLOCCO OPERATIVO ASSOLUTO.</p>
-            <ul style="margin:0; padding-left:20px; color: #fca5a5; font-size: 0.9rem;">
+            <p style="margin-top:8px; color: #fca5a5; font-size: 0.95rem; font-weight:bold;">BLOCCO OPERATIVO ASSOLUTO.</p>
+            <ul style="margin:0; padding-left:20px; color: #fca5a5; font-size: 0.95rem;">
                 {''.join([f'<li>{r}</li>' for r in override_reasons])}
             </ul>
         </div>
         """, unsafe_allow_html=True)
 
     # ==========================================================
-    # KPI DASHBOARD (Risolto bug unpack st.columns)
+    # KPI DASHBOARD EOD
     # ==========================================================
     r1 = st.columns(6)
     
@@ -147,7 +149,7 @@ def render_page1():
     liq_col = "normal" if not pd.isna(liq_d) and liq_d >= 0 else "inverse"
     r1[5].metric("Δ LIQ. 5D", f"{liq_d:.2f}%" if not pd.isna(liq_d) else "N/A", "📉 CONTRAZIONE" if not pd.isna(liq_d) and liq_d < 0 else "📈 ESPANSIONE", delta_color=liq_col)
 
-    st.write("") # Spaziatura
+    st.write("") # Margine verticale
     r2 = st.columns(6)
     
     dxy_v = last.get('DXY', np.nan)
@@ -170,7 +172,7 @@ def render_page1():
     # ==========================================================
     # CARDS MACRO: REGIME E PROPENSIONE AL RISCHIO
     # ==========================================================
-    with st.spinner("Computazione matrici statistiche..."):
+    with st.spinner("Computazione tensori statistici..."):
         df_regime_prices = get_cached_regime_data()
         df_matrix, dominant_regime, conf_pct = calculate_regime_matrix(df_regime_prices)
         risk_metrics, risk_err = calculate_risk_propensity(df)
@@ -183,7 +185,7 @@ def render_page1():
             <h4 style="color:#94a3b8; margin-top:0; font-size:11px; font-weight: 600; text-transform:uppercase; letter-spacing: 1px;">Regime Economico Predominante</h4>
             <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top: 24px;">
                 <div>
-                    <span style="color:#f8fafc; font-size:22px; font-weight:800; text-transform:uppercase;">{dominant_regime}</span>
+                    <span style="color:#ffffff; font-size:22px; font-weight:800; text-transform:uppercase;">{dominant_regime}</span>
                 </div>
                 <div style="text-align:right;">
                     <span style="color:#f59e0b; font-size:26px; font-weight:800;">{conf_pct}%</span>
@@ -196,7 +198,7 @@ def render_page1():
     with col_q2:
         if risk_err or not risk_metrics:
             r_status, r_on, r_off = "N/D", 0, 0
-            r_color = "#64748b"
+            r_color = "#94a3b8"
         else:
             r_status = risk_metrics['Status']
             r_on = risk_metrics['Risk_On_Pct']
@@ -205,7 +207,7 @@ def render_page1():
             
         st.markdown(f"""
         <div style="background-color:#1e293b; padding:24px; border-radius:8px; border: 1px solid #334155;">
-            <h4 style="color:#94a3b8; margin-top:0; font-size:11px; font-weight: 600; text-transform:uppercase; letter-spacing: 1px;">Propensione al Rischio (Z-Score)</h4>
+            <h4 style="color:#94a3b8; margin-top:0; font-size:11px; font-weight: 600; text-transform:uppercase; letter-spacing: 1px;">Propensione al Rischio (Z-Score Storico)</h4>
             <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top: 24px;">
                 <div>
                     <span style="color:{r_color}; font-size:22px; font-weight:800; text-transform:uppercase;">{r_status}</span>
@@ -224,9 +226,9 @@ def render_page1():
     st.write("")
     
     # ==========================================================
-    # MATRICE HEATMAP
+    # MATRICE HEATMAP (Color scale stabilita)
     # ==========================================================
-    st.markdown("### 🗺️ Matrice dei Regimi di Mercato (Heatmap)")
+    st.markdown("### 🗺️ Matrice dei Regimi di Mercato")
 
     if not df_matrix.empty:
         fig_hm = go.Figure(data=go.Heatmap(
@@ -266,12 +268,12 @@ def render_page1():
     # MODULO CICLO ECONOMICO E HARD VETO
     # ==========================================================
     st.markdown("### 🧭 Posizionamento nel Ciclo Economico")
-    with st.spinner("Estrazione tassi e computo regressioni lineari..."):
+    with st.spinner("Estrazione tassi di rendimento e computo delle pendenze..."):
         df_macro = get_cached_macro_data()
         fase_attuale, raw_phase, veto_applied, macro_metrics = calculate_macro_cycle_phase(df_macro, dominant_regime)
 
     if veto_applied:
-        st.warning(f"⚠️ VETO ALGORITMICO APPLICATO: Calcolo base '{raw_phase}' invalidato. Fase forzata a '{fase_attuale}' per allineamento al regime predominante '{dominant_regime}'.")
+        st.warning(f"⚠️ VETO ALGORITMICO APPLICATO: L'algoritmo indicava originariamente '{raw_phase}'. L'output è stato forzato matematicamente a '{fase_attuale}' a causa del regime '{dominant_regime}'.")
 
     if fase_attuale != "DATI INSUFFICIENTI":
         quad_cols = st.columns(4)
@@ -302,27 +304,27 @@ def render_page1():
     st.divider()
 
     # ==========================================================
-    # GRAFICI MACRO (Renderizzazione Nuda)
+    # GRAFICI MACRO STRUTTURALI
     # ==========================================================
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("<h4 style='font-size:15px; color:#94a3b8;'>1. Liquidità Netta Estesa</h4>", unsafe_allow_html=True)
+        st.markdown("<h4 style='font-size:15px; color:#94a3b8; font-weight: 600;'>1. Liquidità Netta Estesa</h4>", unsafe_allow_html=True)
         if 'Net_Liquidity' in df.columns and not df['Net_Liquidity'].dropna().empty:
             st.plotly_chart(px.area(df.dropna(subset=['Net_Liquidity']).tail(250), x="Data", y="Net_Liquidity", color_discrete_sequence=['#14b8a6'], template='plotly_dark'), use_container_width=True)
     with c2:
-        st.markdown("<h4 style='font-size:15px; color:#94a3b8;'>2. M2 Money Supply</h4>", unsafe_allow_html=True)
+        st.markdown("<h4 style='font-size:15px; color:#94a3b8; font-weight: 600;'>2. M2 Money Supply</h4>", unsafe_allow_html=True)
         if 'M2' in df.columns and not df['M2'].dropna().empty:
             st.plotly_chart(px.line(df.dropna(subset=['M2']).tail(250), x="Data", y="M2", template='plotly_dark'), use_container_width=True)
 
     c3, c4 = st.columns(2)
     with c3:
-        st.markdown("<h4 style='font-size:15px; color:#94a3b8;'>3. Modello GOLD / OIL</h4>", unsafe_allow_html=True)
+        st.markdown("<h4 style='font-size:15px; color:#94a3b8; font-weight: 600;'>3. Modello GOLD / OIL</h4>", unsafe_allow_html=True)
         if 'Ratio_GO' in df.columns and not df['Ratio_GO'].dropna().empty:
             fig_go = px.line(df.dropna(subset=['Ratio_GO']).tail(100), x="Data", y="Ratio_GO", color_discrete_sequence=['#fbbf24'], template='plotly_dark')
             fig_go.add_hline(y=2.5, line_dash="dash", line_color="#ef4444")
             st.plotly_chart(fig_go, use_container_width=True)
     with c4:
-        st.markdown("<h4 style='font-size:15px; color:#94a3b8;'>4. Tassi vs Volatilità (TLT/MOVE)</h4>", unsafe_allow_html=True)
+        st.markdown("<h4 style='font-size:15px; color:#94a3b8; font-weight: 600;'>4. Tassi vs Volatilità (TLT/MOVE)</h4>", unsafe_allow_html=True)
         if set(['TLT', 'MOVE']).issubset(df.columns):
             temp_df = df.dropna(subset=['TLT', 'MOVE']).tail(100)
             if not temp_df.empty:
