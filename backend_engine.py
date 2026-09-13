@@ -18,7 +18,6 @@ COLUMNS = [
     "Net_Liquidity", "M2"
 ]
 
-# MATRICE RIGOROSA: 10 Portafogli (Inclusi Modelli Debasement)
 REGIME_BASKETS = {
     "GOLDILOCKS ECONOMY": ["QQQ", "XLK", "XLY", "IEF", "SMH"],
     "RECESSION": ["TLT", "SHY", "XLU", "XLP", "GLD"],
@@ -32,7 +31,6 @@ REGIME_BASKETS = {
     "DEBASEMENT (SENZA BITCOIN)": ["GLD", "XME", "COPX", "EEM", "VDST.MI"]
 }
 
-# OFFSET RIGIDI: Misurazione in timedelta per riproduzione algoritmi proprietari (Giorni lineari)
 TIMEFRAMES_CALENDAR = {
     "Δ 1D": "session", 
     "Δ 1W": timedelta(days=7),
@@ -144,14 +142,8 @@ def fetch_cboe_pc_ratio():
     except Exception:
         return pd.DataFrame(columns=['Data', 'P_C'])
 
-def calculate_rolling_zscore(series, window=252):
-    rolling_mean = series.rolling(window=window, min_periods=1).mean()
-    rolling_std = series.rolling(window=window, min_periods=1).std(ddof=0)
-    return np.where(rolling_std == 0, 0, (series - rolling_mean) / rolling_std)
-
-
 # ==========================================================
-# FASE 2: MATRICE REGIMI (ALGORITMO GOOGLE FINANCE)
+# FASE 2: MATRICE REGIMI E FILTRO SELETTIVO (1M / 3M)
 # ==========================================================
 def fetch_regime_baskets_data(period="10y"):
     try:
@@ -245,10 +237,16 @@ def calculate_regime_matrix(df_prices):
     confidence_pct = 0.0
     dominant = "N/D"
 
-    # MATEMATICA STRUTTURALE: Sradicamento del rumore a breve termine.
-    # Il regime dominante si misura escludendo 1W e 1M, ponderando oggettivamente 3M (60%) e 6M (40%)
-    if "Δ 3M" in df_matrix.columns and "Δ 6M" in df_matrix.columns:
-        momentum_score = (df_matrix["Δ 3M"] * 0.6) + (df_matrix["Δ 6M"] * 0.4)
+    # ESCLUSIONE DEI MODELLI NON CLASSICI E PONDERAZIONE 1M/3M
+    regimi_esclusi = [
+        "DOLLAR WEAKNESS/GLOBAL REBALANCING +BITCOIN", 
+        "DEBASEMENT AGGRESSIVO", 
+        "DEBASEMENT (SENZA BITCOIN)"
+    ]
+    
+    if "Δ 1M" in df_matrix.columns and "Δ 3M" in df_matrix.columns:
+        df_classic = df_matrix[~df_matrix.index.isin(regimi_esclusi)]
+        momentum_score = (df_classic["Δ 1M"] * 0.4) + (df_classic["Δ 3M"] * 0.6)
         m_valid = momentum_score.dropna()
         if not m_valid.empty:
             dominant = m_valid.idxmax()
@@ -263,7 +261,7 @@ def calculate_regime_matrix(df_prices):
     return df_matrix.round(2), dominant, confidence_pct
 
 # ==========================================================
-# FASE 3: MOTORE CICLO ECONOMICO E VETO
+# FASE 3: MOTORE CICLO ECONOMICO
 # ==========================================================
 def fetch_macro_cycle_data():
     end_date = datetime.now()
@@ -333,7 +331,7 @@ def calculate_macro_cycle_phase(df_macro, predominant_regime):
     return final_phase, raw_phase, veto_applied, metrics
 
 # ==========================================================
-# FASE 4: Z-SCORE PROPENSIONE AL RISCHIO E HARD OVERRIDE
+# FASE 4: Z-SCORE PROPENSIONE AL RISCHIO (CORREZIONE AMPIEZZA)
 # ==========================================================
 def calculate_risk_propensity(df_master):
     if df_master.empty or len(df_master) < 252:
@@ -349,12 +347,17 @@ def calculate_risk_propensity(df_master):
     df_calc = df_calc.dropna(subset=['Risk_XLY_XLP', 'Risk_SPY_RSP', 'Risk_HYG_TLT'])
     if len(df_calc) < 200: return None, "DATI STORICI CARENTI"
 
-    # Sicurezza Matematica: +1e-9 previene DivisionByZero 
+    # Consumatori
     z_xly = (df_calc['Risk_XLY_XLP'].iloc[-1] - df_calc['Risk_XLY_XLP'].mean()) / (df_calc['Risk_XLY_XLP'].std(ddof=0) + 1e-9)
-    z_spy = (df_calc['Risk_SPY_RSP'].iloc[-1] - df_calc['Risk_SPY_RSP'].mean()) / (df_calc['Risk_SPY_RSP'].std(ddof=0) + 1e-9)
+    
+    # INVERSIONE ALGEBRICA AMPIEZZA: SPY alto rispetto a RSP indica concentrazione estrema (fragilità/Risk Off)
+    z_spy_raw = (df_calc['Risk_SPY_RSP'].iloc[-1] - df_calc['Risk_SPY_RSP'].mean()) / (df_calc['Risk_SPY_RSP'].std(ddof=0) + 1e-9)
+    z_spy = -z_spy_raw 
+    
+    # Credito
     z_hyg = (df_calc['Risk_HYG_TLT'].iloc[-1] - df_calc['Risk_HYG_TLT'].mean()) / (df_calc['Risk_HYG_TLT'].std(ddof=0) + 1e-9)
     
-    # Integrazione Modello Struttura VIX (Backwardation = Risk Off)
+    # Struttura VIX e MOVE Index 
     z_vix = 0.0
     if 'VIX' in df_calc.columns and 'VIX3M' in df_calc.columns:
         df_calc['VIX_Struct'] = np.where(df_calc['VIX3M'] > 0, df_calc['VIX'] / df_calc['VIX3M'], np.nan)
@@ -362,14 +365,12 @@ def calculate_risk_propensity(df_master):
         if len(vix_s) > 100:
             z_vix = -((vix_s.iloc[-1] - vix_s.mean()) / (vix_s.std(ddof=0) + 1e-9))
             
-    # Integrazione Modello Stress Obbligazionario (Elevato MOVE = Risk Off)
     z_move = 0.0
     if 'MOVE' in df_calc.columns:
         move_s = df_calc['MOVE'].dropna()
         if len(move_s) > 100:
              z_move = -((move_s.iloc[-1] - move_s.mean()) / (move_s.std(ddof=0) + 1e-9))
 
-    # Ponderazione aggregata a 5 Fattori
     avg_z = (z_xly + z_spy + z_hyg + z_vix + z_move) / 5.0
 
     risk_on_prob = 0.5 * (1 + math.erf(avg_z / math.sqrt(2)))
