@@ -32,7 +32,7 @@ REGIME_BASKETS = {
     "DEBASEMENT (SENZA BITCOIN)": ["GLD", "XME", "COPX", "EEM", "VDST.MI"]
 }
 
-# OFFSET RIGIDI: Misurazione in timedelta (Giorni lineari continui) per replicare OGGI() - X
+# OFFSET RIGIDI: Misurazione in timedelta per riproduzione algoritmi proprietari (Giorni lineari)
 TIMEFRAMES_CALENDAR = {
     "Δ 1D": "session", 
     "Δ 1W": timedelta(days=7),
@@ -151,12 +151,11 @@ def calculate_rolling_zscore(series, window=252):
 
 
 # ==========================================================
-# FASE 2: MATRICE REGIMI E ALGORITMO GOOGLE FINANCE (FORWARD-LOOKING)
+# FASE 2: MATRICE REGIMI (ALGORITMO GOOGLE FINANCE)
 # ==========================================================
 def fetch_regime_baskets_data(period="10y"):
     try:
         unique_tickers = sorted(list({ticker for basket in REGIME_BASKETS.values() for ticker in basket}))
-        # ERADICAZIONE DIFFERENZIALE TOTAL RETURN. L'uso di auto_adjust=False isola il Price Return puro
         data = yf.download(tickers=unique_tickers, period=period, interval="1d", auto_adjust=False, progress=False)
         if data.empty: return pd.DataFrame()
         
@@ -170,7 +169,6 @@ def fetch_regime_baskets_data(period="10y"):
             else:
                 df = data.copy()
         
-        # Piallatura di qualsiasi fuso orario per garantire il matching solare
         if df.index.tz is not None:
             df.index = df.index.tz_localize(None)
         df.index = df.index.normalize()
@@ -184,7 +182,6 @@ def calculate_regime_matrix(df_prices):
         return pd.DataFrame(), "Dati Insufficienti", 0.0
 
     matrix = []
-    # Base matematica di calcolo su TODAY (Esattamente come Fogli Google)
     today = pd.Timestamp(datetime.now().date())
     
     for regime, tickers in REGIME_BASKETS.items():
@@ -193,7 +190,6 @@ def calculate_regime_matrix(df_prices):
         
         basket_prices = df_prices[valid_tickers].ffill()
         
-        # Gestione sicurezza: isolamento dell'ultima chiusura utile assoluta
         valid_current_slice = basket_prices.loc[:today]
         if valid_current_slice.empty: continue
         p_now = valid_current_slice.iloc[-1]
@@ -216,16 +212,13 @@ def calculate_regime_matrix(df_prices):
                         p_past_dict[t] = np.nan
                         continue
                     
-                    # Controllo Inception Asset: Rifiuto matematico di dati fittizi
                     first_idx = series.index[0]
                     if first_idx > target_date:
                         p_past_dict[t] = np.nan
                     else:
-                        # ALGORITMO FORWARD-LOOKING: matching del protocollo Google Finance
                         slice_forward = series.loc[target_date:]
                         if not slice_forward.empty:
                             first_valid_date = slice_forward.index[0]
-                            # Limite tolleranza buchi dati (Delisting/Suspend check): 7 giorni
                             if (first_valid_date - pd.Timestamp(target_date)).days <= 7:
                                 p_past_dict[t] = slice_forward.iloc[0]
                             else:
@@ -235,7 +228,6 @@ def calculate_regime_matrix(df_prices):
                             
                 p_past = pd.Series(p_past_dict)
             
-            # Calcolo crudo e oggettivo del Rate of Change
             roc = ((p_now - p_past) / p_past) * 100.0
             valid_roc = roc.dropna()
             
@@ -253,9 +245,10 @@ def calculate_regime_matrix(df_prices):
     confidence_pct = 0.0
     dominant = "N/D"
 
-    # Algoritmo decisionale Z-Score. Assenza di parametri percentuali arbitrarie.
-    if "Δ 1W" in df_matrix.columns and "Δ 1M" in df_matrix.columns:
-        momentum_score = (df_matrix["Δ 1W"] + df_matrix["Δ 1M"]) / 2.0
+    # MATEMATICA STRUTTURALE: Sradicamento del rumore a breve termine.
+    # Il regime dominante si misura escludendo 1W e 1M, ponderando oggettivamente 3M (60%) e 6M (40%)
+    if "Δ 3M" in df_matrix.columns and "Δ 6M" in df_matrix.columns:
+        momentum_score = (df_matrix["Δ 3M"] * 0.6) + (df_matrix["Δ 6M"] * 0.4)
         m_valid = momentum_score.dropna()
         if not m_valid.empty:
             dominant = m_valid.idxmax()
@@ -352,13 +345,32 @@ def calculate_risk_propensity(df_master):
     df_calc['Risk_XLY_XLP'] = np.where(df_calc['XLP'] > 0, df_calc['XLY'] / df_calc['XLP'], np.nan)
     df_calc['Risk_SPY_RSP'] = np.where(df_calc['RSP'] > 0, df_calc['SPY'] / df_calc['RSP'], np.nan)
     df_calc['Risk_HYG_TLT'] = np.where(df_calc['TLT'] > 0, df_calc['HYG'] / df_calc['TLT'], np.nan)
+    
     df_calc = df_calc.dropna(subset=['Risk_XLY_XLP', 'Risk_SPY_RSP', 'Risk_HYG_TLT'])
     if len(df_calc) < 200: return None, "DATI STORICI CARENTI"
 
-    z_xly = (df_calc['Risk_XLY_XLP'].iloc[-1] - df_calc['Risk_XLY_XLP'].mean()) / df_calc['Risk_XLY_XLP'].std(ddof=0)
-    z_spy = (df_calc['Risk_SPY_RSP'].iloc[-1] - df_calc['Risk_SPY_RSP'].mean()) / df_calc['Risk_SPY_RSP'].std(ddof=0)
-    z_hyg = (df_calc['Risk_HYG_TLT'].iloc[-1] - df_calc['Risk_HYG_TLT'].mean()) / df_calc['Risk_HYG_TLT'].std(ddof=0)
-    avg_z = (z_xly + z_spy + z_hyg) / 3.0
+    # Sicurezza Matematica: +1e-9 previene DivisionByZero 
+    z_xly = (df_calc['Risk_XLY_XLP'].iloc[-1] - df_calc['Risk_XLY_XLP'].mean()) / (df_calc['Risk_XLY_XLP'].std(ddof=0) + 1e-9)
+    z_spy = (df_calc['Risk_SPY_RSP'].iloc[-1] - df_calc['Risk_SPY_RSP'].mean()) / (df_calc['Risk_SPY_RSP'].std(ddof=0) + 1e-9)
+    z_hyg = (df_calc['Risk_HYG_TLT'].iloc[-1] - df_calc['Risk_HYG_TLT'].mean()) / (df_calc['Risk_HYG_TLT'].std(ddof=0) + 1e-9)
+    
+    # Integrazione Modello Struttura VIX (Backwardation = Risk Off)
+    z_vix = 0.0
+    if 'VIX' in df_calc.columns and 'VIX3M' in df_calc.columns:
+        df_calc['VIX_Struct'] = np.where(df_calc['VIX3M'] > 0, df_calc['VIX'] / df_calc['VIX3M'], np.nan)
+        vix_s = df_calc['VIX_Struct'].dropna()
+        if len(vix_s) > 100:
+            z_vix = -((vix_s.iloc[-1] - vix_s.mean()) / (vix_s.std(ddof=0) + 1e-9))
+            
+    # Integrazione Modello Stress Obbligazionario (Elevato MOVE = Risk Off)
+    z_move = 0.0
+    if 'MOVE' in df_calc.columns:
+        move_s = df_calc['MOVE'].dropna()
+        if len(move_s) > 100:
+             z_move = -((move_s.iloc[-1] - move_s.mean()) / (move_s.std(ddof=0) + 1e-9))
+
+    # Ponderazione aggregata a 5 Fattori
+    avg_z = (z_xly + z_spy + z_hyg + z_vix + z_move) / 5.0
 
     risk_on_prob = 0.5 * (1 + math.erf(avg_z / math.sqrt(2)))
     risk_on_pct = round(risk_on_prob * 100.0, 1)
