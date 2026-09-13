@@ -29,17 +29,17 @@ REGIME_BASKETS = {
     "DEFLATION": ["TLT", "BIL", "SHY", "XLP", "XLU"]
 }
 
-# OFFSET RIGIDI: Misurazione in timedelta (Giorni lineari continui) per replicare TODAY() - X
+# OFFSET RIGIDI: Misurazione esatta in Mesi/Anni di Calendario solare per replicare EDATE() e TODAY() - X
 TIMEFRAMES_CALENDAR = {
     "Δ 1D": "session", 
-    "Δ 1W": timedelta(days=7),
-    "Δ 1M": timedelta(days=30),
-    "Δ 3M": timedelta(days=90),
-    "Δ 6M": timedelta(days=180),
-    "Δ 1Y": timedelta(days=365),
-    "Δ 2Y": timedelta(days=730),
-    "Δ 3Y": timedelta(days=1095),
-    "Δ 5Y": timedelta(days=1825)
+    "Δ 1W": pd.DateOffset(weeks=1),
+    "Δ 1M": pd.DateOffset(months=1),
+    "Δ 3M": pd.DateOffset(months=3),
+    "Δ 6M": pd.DateOffset(months=6),
+    "Δ 1Y": pd.DateOffset(years=1),
+    "Δ 2Y": pd.DateOffset(years=2),
+    "Δ 3Y": pd.DateOffset(years=3),
+    "Δ 5Y": pd.DateOffset(years=5)
 }
 
 # ==========================================================
@@ -148,12 +148,12 @@ def calculate_rolling_zscore(series, window=252):
 
 
 # ==========================================================
-# FASE 2: MATRICE REGIMI E ALGORITMO GOOGLE FINANCE (FORWARD-LOOKING)
+# FASE 2: MATRICE REGIMI (ALGORITMO CALENDARIO E FORWARD-LOOKING)
 # ==========================================================
 def fetch_regime_baskets_data(period="10y"):
     try:
         unique_tickers = sorted(list({ticker for basket in REGIME_BASKETS.values() for ticker in basket}))
-        # ERADICAZIONE DIFFERENZIALE TOTAL RETURN. L'uso di auto_adjust=False isola il Price Return puro
+        # L'uso di auto_adjust=False isola il Price Return puro. I frazionamenti (split) SONO integrati nel Close.
         data = yf.download(tickers=unique_tickers, period=period, interval="1d", auto_adjust=False, progress=False)
         if data.empty: return pd.DataFrame()
         
@@ -166,6 +166,12 @@ def fetch_regime_baskets_data(period="10y"):
                 df.columns = [unique_tickers[0]]
             else:
                 df = data.copy()
+        
+        # Piallatura di qualsiasi fuso orario per garantire il matching solare
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        df.index = df.index.normalize()
+        
         return df.dropna(how="all").sort_index()
     except Exception:
         return pd.DataFrame()
@@ -175,7 +181,7 @@ def calculate_regime_matrix(df_prices):
         return pd.DataFrame(), "Dati Insufficienti", 0.0
 
     matrix = []
-    # Base matematica di calcolo su TODAY (Esattamente come Fogli Google)
+    # Base matematica di calcolo su TODAY normalizzato
     today = pd.Timestamp(datetime.now().date())
     
     for regime, tickers in REGIME_BASKETS.items():
@@ -183,13 +189,18 @@ def calculate_regime_matrix(df_prices):
         if not valid_tickers: continue
         
         basket_prices = df_prices[valid_tickers].ffill()
-        p_now = basket_prices.iloc[-1]
+        
+        # Gestione sicurezza: isolamento dell'ultima chiusura utile assoluta
+        valid_current_slice = basket_prices.loc[:today]
+        if valid_current_slice.empty: continue
+        p_now = valid_current_slice.iloc[-1]
+        
         row_data = {"Regime": regime}
         
         for tf_label, offset in TIMEFRAMES_CALENDAR.items():
             if tf_label == "Δ 1D":
-                if len(basket_prices) >= 2:
-                    p_past = basket_prices.iloc[-2]
+                if len(valid_current_slice) >= 2:
+                    p_past = valid_current_slice.iloc[-2]
                 else:
                     p_past = pd.Series(np.nan, index=basket_prices.columns)
             else:
@@ -202,18 +213,17 @@ def calculate_regime_matrix(df_prices):
                         p_past_dict[t] = np.nan
                         continue
                     
+                    # Controllo Inception Asset: Rifiuto matematico di dati fittizi
                     first_idx = series.index[0]
-                    # Controllo Inception Asset: Prevista generazione NaN per evitare inquinamento medie aritmetiche
                     if first_idx > target_date:
                         p_past_dict[t] = np.nan
                     else:
-                        # APPLICAZIONE ALGORITMO FORWARD-LOOKING DI GOOGLEFINANCE:
-                        # Se la data di lookback cade in un weekend, preleva la PRIMA sessione operativa successiva.
+                        # ALGORITMO FORWARD-LOOKING: matching del protocollo Google Finance
                         slice_forward = series.loc[target_date:]
                         if not slice_forward.empty:
                             first_valid_date = slice_forward.index[0]
-                            # Limite tolleranza buchi dati (Delisting check): 7 giorni
-                            if (first_valid_date - target_date).days <= 7:
+                            # Limite tolleranza buchi dati (Delisting/Suspend check): 7 giorni
+                            if (first_valid_date - pd.Timestamp(target_date)).days <= 7:
                                 p_past_dict[t] = slice_forward.iloc[0]
                             else:
                                 p_past_dict[t] = np.nan
@@ -222,6 +232,7 @@ def calculate_regime_matrix(df_prices):
                             
                 p_past = pd.Series(p_past_dict)
             
+            # Calcolo crudo e oggettivo del Rate of Change
             roc = ((p_now - p_past) / p_past) * 100.0
             valid_roc = roc.dropna()
             
@@ -239,7 +250,7 @@ def calculate_regime_matrix(df_prices):
     confidence_pct = 0.0
     dominant = "N/D"
 
-    # Algoritmo decisionale Z-Score. Assenza di parametri fittizi o percentuali arbitrarie.
+    # Algoritmo decisionale Z-Score. Assenza di parametri percentuali arbitrarie.
     if "Δ 1W" in df_matrix.columns and "Δ 1M" in df_matrix.columns:
         momentum_score = (df_matrix["Δ 1W"] + df_matrix["Δ 1M"]) / 2.0
         m_valid = momentum_score.dropna()
