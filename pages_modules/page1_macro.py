@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
 import plotly.graph_objects as go
+import plotly.express as px
 from datetime import datetime
 from backend_engine import (
     load_db, save_db, fetch_yahoo_data, fetch_bridge_data, 
@@ -168,7 +168,7 @@ def render_page1():
     liq_col = "normal" if not pd.isna(liq_d) and liq_d >= 0 else "inverse"
     r1[5].metric("Δ LIQ. 5D", f"{liq_d:.2f}%" if not pd.isna(liq_d) else "N/A", "📉 CONTRAZIONE" if not pd.isna(liq_d) and liq_d < 0 else "📈 ESPANSIONE", delta_color=liq_col)
 
-    st.write("") # Margine verticale
+    st.write("") 
     r2 = st.columns(6)
     
     dxy_v = last.get('DXY', np.nan)
@@ -245,24 +245,32 @@ def render_page1():
     st.write("")
     
     # ==========================================================
-    # MATRICE HEATMAP
+    # MATRICE HEATMAP CON NORMALIZZAZIONE PER COLONNA (Min-Max Scaling)
     # ==========================================================
     st.markdown("### 🗺️ Matrice dei Regimi di Mercato")
 
     if not df_matrix.empty:
+        # Conversione sicura in formato puramente numerico per le operazioni matematiche
+        df_numeric = df_matrix.apply(pd.to_numeric, errors='coerce')
+        
+        # Algoritmo di normalizzazione Min-Max indipendente per ciascuna colonna
+        df_norm = (df_numeric - df_numeric.min()) / (df_numeric.max() - df_numeric.min())
+        # Protezione anti-crash nel caso in cui una colonna abbia valori identici o vuoti (fissato a 0.5 giallo mediano)
+        df_norm = df_norm.fillna(0.5)
+
         fig_hm = go.Figure(data=go.Heatmap(
-            z=df_matrix.values,
+            z=df_norm.values, # Fornisce la scala 0.0 - 1.0 al motore cromatico
             x=df_matrix.columns,
             y=df_matrix.index,
             colorscale=[
-                [0.0, '#7f1d1d'], # Rosso Scuro
-                [0.4, '#ef4444'], # Rosso
-                [0.5, '#fef08a'], # Giallo Neutro
-                [0.6, '#22c55e'], # Verde
-                [1.0, '#14532d']  # Verde Scuro
+                [0.0, '#ef4444'], # Rosso (Peggiore performante della singola colonna)
+                [0.5, '#fef08a'], # Giallo (Mediano della singola colonna)
+                [1.0, '#22c55e']  # Verde (Miglior performante della singola colonna)
             ],
-            zmid=0.0,
-            text=df_matrix.map(lambda x: f"{x:+.2f}%" if not pd.isna(x) else "N/D").values,
+            zmin=0.0,
+            zmax=1.0,
+            # Testo formattato che ignora la normalizzazione mostrando i dati reali
+            text=df_matrix.map(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/D").values,
             texttemplate="%{text}",
             showscale=False,
             xgap=2, ygap=2
@@ -271,7 +279,7 @@ def render_page1():
         fig_hm.update_layout(
             template='plotly_dark', 
             margin=dict(l=0, r=0, t=10, b=0),
-            height=420,
+            height=500, # Aumentata l'altezza per accomodare le 10 righe
             xaxis=dict(side='top', tickfont=dict(size=12, color="#cbd5e1")),
             yaxis=dict(tickfont=dict(size=11, color="#f8fafc"), autorange="reversed"),
             plot_bgcolor='rgba(0,0,0,0)',
