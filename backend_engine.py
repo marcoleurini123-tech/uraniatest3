@@ -143,7 +143,7 @@ def fetch_cboe_pc_ratio():
         return pd.DataFrame(columns=['Data', 'P_C'])
 
 # ==========================================================
-# FASE 2: MATRICE REGIMI E FILTRO SELETTIVO (1M / 3M)
+# FASE 2: MATRICE REGIMI (ALGORITMO PURIFICATO A 7 STATI)
 # ==========================================================
 def fetch_regime_baskets_data(period="10y"):
     try:
@@ -237,7 +237,7 @@ def calculate_regime_matrix(df_prices):
     confidence_pct = 0.0
     dominant = "N/D"
 
-    # ESCLUSIONE DEI MODELLI NON CLASSICI E PONDERAZIONE 1M/3M
+    # ESCLUSIONE DEI MODELLI DEBASEMENT PER ALLINEAMENTO A QUANTATSE (7 STATI CLASSICI)
     regimi_esclusi = [
         "DOLLAR WEAKNESS/GLOBAL REBALANCING +BITCOIN", 
         "DEBASEMENT AGGRESSIVO", 
@@ -246,17 +246,20 @@ def calculate_regime_matrix(df_prices):
     
     if "Δ 1M" in df_matrix.columns and "Δ 3M" in df_matrix.columns:
         df_classic = df_matrix[~df_matrix.index.isin(regimi_esclusi)]
-        momentum_score = (df_classic["Δ 1M"] * 0.4) + (df_classic["Δ 3M"] * 0.6)
+        
+        # BARICENTRO TRIMESTRALE PURO: 70% a 3M, 30% a 1M
+        momentum_score = (df_classic["Δ 1M"] * 0.3) + (df_classic["Δ 3M"] * 0.7)
         m_valid = momentum_score.dropna()
+        
         if not m_valid.empty:
             dominant = m_valid.idxmax()
-            if len(m_valid) > 1 and m_valid.std() > 0:
-                z_scores = (m_valid - m_valid.mean()) / m_valid.std()
-                exp_z = np.exp(z_scores)
-                probs = (exp_z / exp_z.sum()) * 100.0
-                confidence_pct = round(probs[dominant], 1)
+            
+            # CALCOLO DELLA PERCENTUALE DI DOMINANZA DIRETTO E STABILE (Senza distorsioni esponenziali)
+            total_score = m_valid.clip(lower=0).sum()
+            if total_score > 0:
+                confidence_pct = round(float(m_valid[dominant] / total_score * 100.0), 1)
             else:
-                confidence_pct = 100.0
+                confidence_pct = 100.0 / len(m_valid)
                 
     return df_matrix.round(2), dominant, confidence_pct
 
@@ -316,7 +319,7 @@ def calculate_macro_cycle_phase(df_macro, predominant_regime):
 
     veto_applied = False
     final_phase = raw_phase
-    regimi_antitetici = ["DEBASEMENT (SENZA BITCOIN)", "DEBASEMENT AGGRESSIVO", "STAGFLATION"]
+    regimi_antitetici = ["STAGFLATION"]
     
     if predominant_regime in regimi_antitetici and raw_phase == "Ripresa":
         veto_applied = True
@@ -331,7 +334,7 @@ def calculate_macro_cycle_phase(df_macro, predominant_regime):
     return final_phase, raw_phase, veto_applied, metrics
 
 # ==========================================================
-# FASE 4: Z-SCORE PROPENSIONE AL RISCHIO (CORREZIONE AMPIEZZA)
+# FASE 4: Z-SCORE PROPENSIONE AL RISCHIO
 # ==========================================================
 def calculate_risk_propensity(df_master):
     if df_master.empty or len(df_master) < 252:
@@ -347,17 +350,10 @@ def calculate_risk_propensity(df_master):
     df_calc = df_calc.dropna(subset=['Risk_XLY_XLP', 'Risk_SPY_RSP', 'Risk_HYG_TLT'])
     if len(df_calc) < 200: return None, "DATI STORICI CARENTI"
 
-    # Consumatori
     z_xly = (df_calc['Risk_XLY_XLP'].iloc[-1] - df_calc['Risk_XLY_XLP'].mean()) / (df_calc['Risk_XLY_XLP'].std(ddof=0) + 1e-9)
-    
-    # INVERSIONE ALGEBRICA AMPIEZZA: SPY alto rispetto a RSP indica concentrazione estrema (fragilità/Risk Off)
-    z_spy_raw = (df_calc['Risk_SPY_RSP'].iloc[-1] - df_calc['Risk_SPY_RSP'].mean()) / (df_calc['Risk_SPY_RSP'].std(ddof=0) + 1e-9)
-    z_spy = -z_spy_raw 
-    
-    # Credito
+    z_spy = -((df_calc['Risk_SPY_RSP'].iloc[-1] - df_calc['Risk_SPY_RSP'].mean()) / (df_calc['Risk_SPY_RSP'].std(ddof=0) + 1e-9))
     z_hyg = (df_calc['Risk_HYG_TLT'].iloc[-1] - df_calc['Risk_HYG_TLT'].mean()) / (df_calc['Risk_HYG_TLT'].std(ddof=0) + 1e-9)
     
-    # Struttura VIX e MOVE Index 
     z_vix = 0.0
     if 'VIX' in df_calc.columns and 'VIX3M' in df_calc.columns:
         df_calc['VIX_Struct'] = np.where(df_calc['VIX3M'] > 0, df_calc['VIX'] / df_calc['VIX3M'], np.nan)
