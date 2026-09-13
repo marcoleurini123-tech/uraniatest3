@@ -18,7 +18,7 @@ COLUMNS = [
     "Net_Liquidity", "M2"
 ]
 
-# MATRICE RIGOROSA: Nomenclatura e Ticker allineati al database originario
+# MATRICE RIGOROSA: 7 Portafogli Macroeconomia Classica
 REGIME_BASKETS = {
     "GOLDILOCKS ECONOMY": ["QQQ", "XLK", "XLY", "IEF", "SMH"],
     "RECESSION": ["TLT", "SHY", "XLU", "XLP", "GLD"],
@@ -26,27 +26,24 @@ REGIME_BASKETS = {
     "REFLATION": ["XLI", "XLF", "IWM", "EEM", "DBC"],
     "DISINFLATION/SOFT LANDING": ["TLT", "LQD", "QQQ", "VTI", "GLD"],
     "DOLLAR WEAKNESS/GLOBAL REBALANCING": ["EEM", "FXF", "GLD", "IXUS", "DBC"],
-    "DEFLATION": ["TLT", "BIL", "SHY", "XLP", "XLU"],
-    "DOLLAR WEAKNESS/GLOBAL REBALANCING +BITCOIN": ["EEM", "FXF", "GLD", "IXUS", "IBIT"],
-    "DEBASEMENT AGGRESSIVO": ["GLD", "XME", "COPX", "EEM", "IBIT"],
-    "DEBASEMENT (SENZA BITCOIN)": ["GLD", "XME", "COPX", "EEM", "VDST.MI"]
+    "DEFLATION": ["TLT", "BIL", "SHY", "XLP", "XLU"]
 }
 
-# ALLINEAMENTO FOGLI GOOGLE: Orizzonti temporali basati su offset di calendario (non trading days)
-TIMEFRAMES = {
+# OFFSET RIGIDI: Misurazione in timedelta (Giorni lineari continui) per replicare TODAY() - X
+TIMEFRAMES_CALENDAR = {
     "Δ 1D": "session", 
-    "Δ 1W": pd.DateOffset(days=7),
-    "Δ 1M": pd.DateOffset(months=1),
-    "Δ 3M": pd.DateOffset(months=3),
-    "Δ 6M": pd.DateOffset(months=6),
-    "Δ 1Y": pd.DateOffset(years=1),
-    "Δ 2Y": pd.DateOffset(years=2),
-    "Δ 3Y": pd.DateOffset(years=3),
-    "Δ 5Y": pd.DateOffset(years=5)
+    "Δ 1W": timedelta(days=7),
+    "Δ 1M": timedelta(days=30),
+    "Δ 3M": timedelta(days=90),
+    "Δ 6M": timedelta(days=180),
+    "Δ 1Y": timedelta(days=365),
+    "Δ 2Y": timedelta(days=730),
+    "Δ 3Y": timedelta(days=1095),
+    "Δ 5Y": timedelta(days=1825)
 }
 
 # ==========================================================
-# FASE 1: FETCHING DATI EOD
+# FASE 1: FETCHING DATI EOD - RIGORE ASSOLUTO
 # ==========================================================
 def load_db():
     if os.path.exists(DB_FILE):
@@ -151,16 +148,15 @@ def calculate_rolling_zscore(series, window=252):
 
 
 # ==========================================================
-# FASE 2: MATRICE REGIMI (Calcolo matematico allineato)
+# FASE 2: MATRICE REGIMI E ALGORITMO GOOGLE FINANCE (FORWARD-LOOKING)
 # ==========================================================
-def fetch_regime_baskets_data(period="10y"): # Orizzonte 10y per coprire il delta 5Y effettivo
+def fetch_regime_baskets_data(period="10y"):
     try:
         unique_tickers = sorted(list({ticker for basket in REGIME_BASKETS.values() for ticker in basket}))
-        # auto_adjust=False: obbligatorio per estrarre il Raw Price Return
+        # ERADICAZIONE DIFFERENZIALE TOTAL RETURN. L'uso di auto_adjust=False isola il Price Return puro
         data = yf.download(tickers=unique_tickers, period=period, interval="1d", auto_adjust=False, progress=False)
         if data.empty: return pd.DataFrame()
         
-        # Estrazione colonna "Close" escludendo dividendi
         if isinstance(data.columns, pd.MultiIndex):
             if "Close" in data.columns.levels[0]: df = data["Close"].copy()
             else: df = data.xs("Close", axis=1, level=0).copy()
@@ -171,8 +167,7 @@ def fetch_regime_baskets_data(period="10y"): # Orizzonte 10y per coprire il delt
             else:
                 df = data.copy()
         return df.dropna(how="all").sort_index()
-    except Exception as e:
-        print(f"Errore Data Fetching Matrice: {e}")
+    except Exception:
         return pd.DataFrame()
 
 def calculate_regime_matrix(df_prices):
@@ -180,7 +175,8 @@ def calculate_regime_matrix(df_prices):
         return pd.DataFrame(), "Dati Insufficienti", 0.0
 
     matrix = []
-    last_date = df_prices.index[-1]
+    # Base matematica di calcolo su TODAY (Esattamente come Fogli Google)
+    today = pd.Timestamp(datetime.now().date())
     
     for regime, tickers in REGIME_BASKETS.items():
         valid_tickers = [t for t in tickers if t in df_prices.columns]
@@ -190,26 +186,44 @@ def calculate_regime_matrix(df_prices):
         p_now = basket_prices.iloc[-1]
         row_data = {"Regime": regime}
         
-        for tf_label, offset in TIMEFRAMES.items():
+        for tf_label, offset in TIMEFRAMES_CALENDAR.items():
             if tf_label == "Δ 1D":
                 if len(basket_prices) >= 2:
                     p_past = basket_prices.iloc[-2]
                 else:
                     p_past = pd.Series(np.nan, index=basket_prices.columns)
             else:
-                # Logica di Calendario: retrocessione esatta alla data utile (TODAY - OFFSET)
-                target_date = last_date - offset
-                past_slice = basket_prices.loc[:target_date]
-                if not past_slice.empty:
-                    p_past = past_slice.iloc[-1]
-                else:
-                    p_past = pd.Series(np.nan, index=basket_prices.columns)
+                target_date = today - offset
+                p_past_dict = {}
+                
+                for t in basket_prices.columns:
+                    series = basket_prices[t].dropna()
+                    if series.empty:
+                        p_past_dict[t] = np.nan
+                        continue
+                    
+                    first_idx = series.index[0]
+                    # Controllo Inception Asset: Prevista generazione NaN per evitare inquinamento medie aritmetiche
+                    if first_idx > target_date:
+                        p_past_dict[t] = np.nan
+                    else:
+                        # APPLICAZIONE ALGORITMO FORWARD-LOOKING DI GOOGLEFINANCE:
+                        # Se la data di lookback cade in un weekend, preleva la PRIMA sessione operativa successiva.
+                        slice_forward = series.loc[target_date:]
+                        if not slice_forward.empty:
+                            first_valid_date = slice_forward.index[0]
+                            # Limite tolleranza buchi dati (Delisting check): 7 giorni
+                            if (first_valid_date - target_date).days <= 7:
+                                p_past_dict[t] = slice_forward.iloc[0]
+                            else:
+                                p_past_dict[t] = np.nan
+                        else:
+                            p_past_dict[t] = np.nan
+                            
+                p_past = pd.Series(p_past_dict)
             
-            # Rate of Change (ROC) indipendente per singolo asset
-            roc_individual_assets = ((p_now - p_past) / p_past) * 100.0
-            
-            # Dropout automatico dei valori NaN (es. ETF non ancora emessi)
-            valid_roc = roc_individual_assets.dropna()
+            roc = ((p_now - p_past) / p_past) * 100.0
+            valid_roc = roc.dropna()
             
             if not valid_roc.empty:
                 row_data[tf_label] = float(valid_roc.mean())
@@ -225,7 +239,7 @@ def calculate_regime_matrix(df_prices):
     confidence_pct = 0.0
     dominant = "N/D"
 
-    # Z-Score Mobile per l'estrazione probabilistica del Regime Dominante
+    # Algoritmo decisionale Z-Score. Assenza di parametri fittizi o percentuali arbitrarie.
     if "Δ 1W" in df_matrix.columns and "Δ 1M" in df_matrix.columns:
         momentum_score = (df_matrix["Δ 1W"] + df_matrix["Δ 1M"]) / 2.0
         m_valid = momentum_score.dropna()
@@ -242,7 +256,7 @@ def calculate_regime_matrix(df_prices):
     return df_matrix.round(2), dominant, confidence_pct
 
 # ==========================================================
-# FASE 3: MOTORE CICLO ECONOMICO
+# FASE 3: MOTORE CICLO ECONOMICO E VETO
 # ==========================================================
 def fetch_macro_cycle_data():
     end_date = datetime.now()
@@ -297,7 +311,7 @@ def calculate_macro_cycle_phase(df_macro, predominant_regime):
 
     veto_applied = False
     final_phase = raw_phase
-    regimi_antitetici = ["DEBASEMENT (SENZA BITCOIN)", "DEBASEMENT AGGRESSIVO", "STAGFLATION"]
+    regimi_antitetici = ["STAGFLATION"]
     
     if predominant_regime in regimi_antitetici and raw_phase == "Ripresa":
         veto_applied = True
@@ -312,7 +326,7 @@ def calculate_macro_cycle_phase(df_macro, predominant_regime):
     return final_phase, raw_phase, veto_applied, metrics
 
 # ==========================================================
-# FASE 4: PROPENSIONE AL RISCHIO E HARD OVERRIDE
+# FASE 4: Z-SCORE PROPENSIONE AL RISCHIO E HARD OVERRIDE
 # ==========================================================
 def calculate_risk_propensity(df_master):
     if df_master.empty or len(df_master) < 252:
@@ -320,12 +334,14 @@ def calculate_risk_propensity(df_master):
     df_calc = df_master.tail(252).copy()
     required = ['XLY', 'XLP', 'SPY', 'RSP', 'HYG', 'TLT']
     if not all(col in df_calc.columns for col in required): return None, "DATI INSUFFICIENTI"
+    
     df_calc['Risk_XLY_XLP'] = np.where(df_calc['XLP'] > 0, df_calc['XLY'] / df_calc['XLP'], np.nan)
     df_calc['Risk_SPY_RSP'] = np.where(df_calc['RSP'] > 0, df_calc['SPY'] / df_calc['RSP'], np.nan)
     df_calc['Risk_HYG_TLT'] = np.where(df_calc['TLT'] > 0, df_calc['HYG'] / df_calc['TLT'], np.nan)
     df_calc = df_calc.dropna(subset=['Risk_XLY_XLP', 'Risk_SPY_RSP', 'Risk_HYG_TLT'])
     if len(df_calc) < 200: return None, "DATI STORICI CARENTI"
 
+    # Ponderazione esclusiva basata su Z-Score Storico (252 sessioni)
     z_xly = (df_calc['Risk_XLY_XLP'].iloc[-1] - df_calc['Risk_XLY_XLP'].mean()) / df_calc['Risk_XLY_XLP'].std(ddof=0)
     z_spy = (df_calc['Risk_SPY_RSP'].iloc[-1] - df_calc['Risk_SPY_RSP'].mean()) / df_calc['Risk_SPY_RSP'].std(ddof=0)
     z_hyg = (df_calc['Risk_HYG_TLT'].iloc[-1] - df_calc['Risk_HYG_TLT'].mean()) / df_calc['Risk_HYG_TLT'].std(ddof=0)
