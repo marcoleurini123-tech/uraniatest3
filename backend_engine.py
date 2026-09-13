@@ -32,10 +32,17 @@ REGIME_BASKETS = {
     "DEBASEMENT (SENZA BITCOIN)": ["GLD", "XME", "COPX", "EEM", "VDST.MI"]
 }
 
-# STANDARD QUANTITATIVO: Orizzonti temporali basati sui giorni di borsa effettivi (Trading Days)
+# ALLINEAMENTO FOGLI GOOGLE: Orizzonti temporali basati su offset di calendario (non trading days)
 TIMEFRAMES = {
-    "Δ 1D": 1, "Δ 1W": 5, "Δ 1M": 21, "Δ 3M": 63, 
-    "Δ 6M": 126, "Δ 1Y": 252, "Δ 2Y": 504, "Δ 3Y": 756, "Δ 5Y": 1260
+    "Δ 1D": "session", 
+    "Δ 1W": pd.DateOffset(days=7),
+    "Δ 1M": pd.DateOffset(months=1),
+    "Δ 3M": pd.DateOffset(months=3),
+    "Δ 6M": pd.DateOffset(months=6),
+    "Δ 1Y": pd.DateOffset(years=1),
+    "Δ 2Y": pd.DateOffset(years=2),
+    "Δ 3Y": pd.DateOffset(years=3),
+    "Δ 5Y": pd.DateOffset(years=5)
 }
 
 # ==========================================================
@@ -144,16 +151,16 @@ def calculate_rolling_zscore(series, window=252):
 
 
 # ==========================================================
-# FASE 2: MATRICE REGIMI (Combinazione Esatta Price Return + Trading Days)
+# FASE 2: MATRICE REGIMI (Calcolo matematico allineato)
 # ==========================================================
-def fetch_regime_baskets_data(period="10y"):
+def fetch_regime_baskets_data(period="10y"): # Orizzonte 10y per coprire il delta 5Y effettivo
     try:
         unique_tickers = sorted(list({ticker for basket in REGIME_BASKETS.values() for ticker in basket}))
-        # MATEMATICA CRUDA: auto_adjust=False forza l'uso del Price Return per replicare GOOGLEFINANCE()
+        # auto_adjust=False: obbligatorio per estrarre il Raw Price Return
         data = yf.download(tickers=unique_tickers, period=period, interval="1d", auto_adjust=False, progress=False)
         if data.empty: return pd.DataFrame()
         
-        # Estrazione esclusiva della colonna "Close" (Aggiustata per gli split azionari ma non per i dividendi)
+        # Estrazione colonna "Close" escludendo dividendi
         if isinstance(data.columns, pd.MultiIndex):
             if "Close" in data.columns.levels[0]: df = data["Close"].copy()
             else: df = data.xs("Close", axis=1, level=0).copy()
@@ -164,35 +171,48 @@ def fetch_regime_baskets_data(period="10y"):
             else:
                 df = data.copy()
         return df.dropna(how="all").sort_index()
-    except Exception:
+    except Exception as e:
+        print(f"Errore Data Fetching Matrice: {e}")
         return pd.DataFrame()
 
 def calculate_regime_matrix(df_prices):
-    if df_prices.empty or len(df_prices) < 63:
+    if df_prices.empty or len(df_prices) < 5:
         return pd.DataFrame(), "Dati Insufficienti", 0.0
 
     matrix = []
+    last_date = df_prices.index[-1]
     
     for regime, tickers in REGIME_BASKETS.items():
         valid_tickers = [t for t in tickers if t in df_prices.columns]
         if not valid_tickers: continue
         
         basket_prices = df_prices[valid_tickers].ffill()
+        p_now = basket_prices.iloc[-1]
         row_data = {"Regime": regime}
         
-        for tf_label, days in TIMEFRAMES.items():
-            if len(basket_prices) > days:
-                p_now = basket_prices.iloc[-1]
-                # Retrocessione rigorosa dell'indice per numero di sessioni di borsa
-                p_past = basket_prices.iloc[-(days + 1)]
-                
-                roc_individual_assets = ((p_now - p_past) / p_past) * 100.0
-                valid_roc = roc_individual_assets.dropna() # Ignora asset mancanti (es. ETF recenti) simulando =MEDIA()
-                
-                if not valid_roc.empty:
-                    row_data[tf_label] = float(valid_roc.mean())
+        for tf_label, offset in TIMEFRAMES.items():
+            if tf_label == "Δ 1D":
+                if len(basket_prices) >= 2:
+                    p_past = basket_prices.iloc[-2]
                 else:
-                    row_data[tf_label] = np.nan
+                    p_past = pd.Series(np.nan, index=basket_prices.columns)
+            else:
+                # Logica di Calendario: retrocessione esatta alla data utile (TODAY - OFFSET)
+                target_date = last_date - offset
+                past_slice = basket_prices.loc[:target_date]
+                if not past_slice.empty:
+                    p_past = past_slice.iloc[-1]
+                else:
+                    p_past = pd.Series(np.nan, index=basket_prices.columns)
+            
+            # Rate of Change (ROC) indipendente per singolo asset
+            roc_individual_assets = ((p_now - p_past) / p_past) * 100.0
+            
+            # Dropout automatico dei valori NaN (es. ETF non ancora emessi)
+            valid_roc = roc_individual_assets.dropna()
+            
+            if not valid_roc.empty:
+                row_data[tf_label] = float(valid_roc.mean())
             else:
                 row_data[tf_label] = np.nan
                 
@@ -205,6 +225,7 @@ def calculate_regime_matrix(df_prices):
     confidence_pct = 0.0
     dominant = "N/D"
 
+    # Z-Score Mobile per l'estrazione probabilistica del Regime Dominante
     if "Δ 1W" in df_matrix.columns and "Δ 1M" in df_matrix.columns:
         momentum_score = (df_matrix["Δ 1W"] + df_matrix["Δ 1M"]) / 2.0
         m_valid = momentum_score.dropna()
