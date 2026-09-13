@@ -18,7 +18,7 @@ COLUMNS = [
     "Net_Liquidity", "M2"
 ]
 
-# MATRICE RIGOROSA: 7 Portafogli Macroeconomia Classica
+# MATRICE RIGOROSA: 10 Portafogli (Inclusi Modelli Debasement)
 REGIME_BASKETS = {
     "GOLDILOCKS ECONOMY": ["QQQ", "XLK", "XLY", "IEF", "SMH"],
     "RECESSION": ["TLT", "SHY", "XLU", "XLP", "GLD"],
@@ -26,13 +26,16 @@ REGIME_BASKETS = {
     "REFLATION": ["XLI", "XLF", "IWM", "EEM", "DBC"],
     "DISINFLATION/SOFT LANDING": ["TLT", "LQD", "QQQ", "VTI", "GLD"],
     "DOLLAR WEAKNESS/GLOBAL REBALANCING": ["EEM", "FXF", "GLD", "IXUS", "DBC"],
-    "DEFLATION": ["TLT", "BIL", "SHY", "XLP", "XLU"]
+    "DEFLATION": ["TLT", "BIL", "SHY", "XLP", "XLU"],
+    "DOLLAR WEAKNESS/GLOBAL REBALANCING +BITCOIN": ["EEM", "FXF", "GLD", "IXUS", "IBIT"],
+    "DEBASEMENT AGGRESSIVO": ["GLD", "XME", "COPX", "EEM", "IBIT"],
+    "DEBASEMENT (SENZA BITCOIN)": ["GLD", "XME", "COPX", "EEM", "VDST.MI"]
 }
 
-# OFFSET RIGIDI: Misurazione esatta in Mesi/Anni di Calendario solare per replicare EDATE() e TODAY() - X
+# OFFSET RIGIDI: Riproduzione esatta degli step di calendario solare (EDATE e Date subtraction)
 TIMEFRAMES_CALENDAR = {
     "Δ 1D": "session", 
-    "Δ 1W": pd.DateOffset(weeks=1),
+    "Δ 1W": pd.DateOffset(days=7),
     "Δ 1M": pd.DateOffset(months=1),
     "Δ 3M": pd.DateOffset(months=3),
     "Δ 6M": pd.DateOffset(months=6),
@@ -148,12 +151,11 @@ def calculate_rolling_zscore(series, window=252):
 
 
 # ==========================================================
-# FASE 2: MATRICE REGIMI (ALGORITMO CALENDARIO E FORWARD-LOOKING)
+# FASE 2: MATRICE REGIMI (ALGORITMO PIALLATURA CALENDARIO FFILL)
 # ==========================================================
 def fetch_regime_baskets_data(period="10y"):
     try:
         unique_tickers = sorted(list({ticker for basket in REGIME_BASKETS.values() for ticker in basket}))
-        # L'uso di auto_adjust=False isola il Price Return puro. I frazionamenti (split) SONO integrati nel Close.
         data = yf.download(tickers=unique_tickers, period=period, interval="1d", auto_adjust=False, progress=False)
         if data.empty: return pd.DataFrame()
         
@@ -167,7 +169,6 @@ def fetch_regime_baskets_data(period="10y"):
             else:
                 df = data.copy()
         
-        # Piallatura di qualsiasi fuso orario per garantire il matching solare
         if df.index.tz is not None:
             df.index = df.index.tz_localize(None)
         df.index = df.index.normalize()
@@ -180,59 +181,36 @@ def calculate_regime_matrix(df_prices):
     if df_prices.empty or len(df_prices) < 5:
         return pd.DataFrame(), "Dati Insufficienti", 0.0
 
-    matrix = []
-    # Base matematica di calcolo su TODAY normalizzato
     today = pd.Timestamp(datetime.now().date())
     
+    full_idx = pd.date_range(start=df_prices.index.min(), end=today, freq='D')
+    df_calendar = df_prices.reindex(full_idx).ffill()
+
+    matrix = []
+    
     for regime, tickers in REGIME_BASKETS.items():
-        valid_tickers = [t for t in tickers if t in df_prices.columns]
+        valid_tickers = [t for t in tickers if t in df_calendar.columns]
         if not valid_tickers: continue
         
-        basket_prices = df_prices[valid_tickers].ffill()
-        
-        # Gestione sicurezza: isolamento dell'ultima chiusura utile assoluta
-        valid_current_slice = basket_prices.loc[:today]
-        if valid_current_slice.empty: continue
-        p_now = valid_current_slice.iloc[-1]
+        basket_prices_calendar = df_calendar[valid_tickers]
+        p_now = basket_prices_calendar.iloc[-1]
         
         row_data = {"Regime": regime}
         
         for tf_label, offset in TIMEFRAMES_CALENDAR.items():
             if tf_label == "Δ 1D":
-                if len(valid_current_slice) >= 2:
-                    p_past = valid_current_slice.iloc[-2]
+                valid_sessions = df_prices[valid_tickers].dropna(how='all')
+                if len(valid_sessions) >= 2:
+                    p_past = valid_sessions.iloc[-2]
                 else:
-                    p_past = pd.Series(np.nan, index=basket_prices.columns)
+                    p_past = pd.Series(np.nan, index=valid_tickers)
             else:
                 target_date = today - offset
-                p_past_dict = {}
-                
-                for t in basket_prices.columns:
-                    series = basket_prices[t].dropna()
-                    if series.empty:
-                        p_past_dict[t] = np.nan
-                        continue
-                    
-                    # Controllo Inception Asset: Rifiuto matematico di dati fittizi
-                    first_idx = series.index[0]
-                    if first_idx > target_date:
-                        p_past_dict[t] = np.nan
-                    else:
-                        # ALGORITMO FORWARD-LOOKING: matching del protocollo Google Finance
-                        slice_forward = series.loc[target_date:]
-                        if not slice_forward.empty:
-                            first_valid_date = slice_forward.index[0]
-                            # Limite tolleranza buchi dati (Delisting/Suspend check): 7 giorni
-                            if (first_valid_date - pd.Timestamp(target_date)).days <= 7:
-                                p_past_dict[t] = slice_forward.iloc[0]
-                            else:
-                                p_past_dict[t] = np.nan
-                        else:
-                            p_past_dict[t] = np.nan
-                            
-                p_past = pd.Series(p_past_dict)
+                if target_date in basket_prices_calendar.index:
+                    p_past = basket_prices_calendar.loc[target_date]
+                else:
+                    p_past = pd.Series(np.nan, index=valid_tickers)
             
-            # Calcolo crudo e oggettivo del Rate of Change
             roc = ((p_now - p_past) / p_past) * 100.0
             valid_roc = roc.dropna()
             
@@ -250,7 +228,6 @@ def calculate_regime_matrix(df_prices):
     confidence_pct = 0.0
     dominant = "N/D"
 
-    # Algoritmo decisionale Z-Score. Assenza di parametri percentuali arbitrarie.
     if "Δ 1W" in df_matrix.columns and "Δ 1M" in df_matrix.columns:
         momentum_score = (df_matrix["Δ 1W"] + df_matrix["Δ 1M"]) / 2.0
         m_valid = momentum_score.dropna()
@@ -322,7 +299,9 @@ def calculate_macro_cycle_phase(df_macro, predominant_regime):
 
     veto_applied = False
     final_phase = raw_phase
-    regimi_antitetici = ["STAGFLATION"]
+    
+    # REINSERIMENTO VETO SUI REGIMI DEBASEMENT
+    regimi_antitetici = ["DEBASEMENT (SENZA BITCOIN)", "DEBASEMENT AGGRESSIVO", "STAGFLATION"]
     
     if predominant_regime in regimi_antitetici and raw_phase == "Ripresa":
         veto_applied = True
@@ -352,7 +331,6 @@ def calculate_risk_propensity(df_master):
     df_calc = df_calc.dropna(subset=['Risk_XLY_XLP', 'Risk_SPY_RSP', 'Risk_HYG_TLT'])
     if len(df_calc) < 200: return None, "DATI STORICI CARENTI"
 
-    # Ponderazione esclusiva basata su Z-Score Storico (252 sessioni)
     z_xly = (df_calc['Risk_XLY_XLP'].iloc[-1] - df_calc['Risk_XLY_XLP'].mean()) / df_calc['Risk_XLY_XLP'].std(ddof=0)
     z_spy = (df_calc['Risk_SPY_RSP'].iloc[-1] - df_calc['Risk_SPY_RSP'].mean()) / df_calc['Risk_SPY_RSP'].std(ddof=0)
     z_hyg = (df_calc['Risk_HYG_TLT'].iloc[-1] - df_calc['Risk_HYG_TLT'].mean()) / df_calc['Risk_HYG_TLT'].std(ddof=0)
