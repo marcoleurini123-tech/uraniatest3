@@ -4,23 +4,22 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
+
+# ==========================================================
+# IMPORTAZIONI RIGOROSE DAL BACKEND (Regola 4)
+# Rimossa l'importazione di fetch_macro_cycle_data. L'UI usa solo il DB.
+# ==========================================================
 from backend_engine import (
     load_db, save_db, fetch_yahoo_data, fetch_bridge_data, 
     fetch_squeezemetrics_data, fetch_cboe_pc_ratio, COLUMNS,
     fetch_regime_baskets_data, calculate_regime_matrix,
-    fetch_macro_cycle_data, calculate_macro_cycle_phase,
-    calculate_risk_propensity, evaluate_risk_override,
-    # Assicurati che sync_all_data o la funzione istituzionale siano chiamate se usi il master sync
-    sync_all_data
+    calculate_macro_cycle_phase, calculate_risk_propensity, 
+    evaluate_risk_override, sync_all_data
 )
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_cached_regime_data():
     return fetch_regime_baskets_data(period="10y")
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_cached_macro_data():
-    return fetch_macro_cycle_data()
 
 def render_page1():
     # CSS Iniettato: Dominanza assoluta sui nodi di testo Streamlit
@@ -94,7 +93,6 @@ def render_page1():
         
         if st.button("2. SINCRONIZZA FLUSSI API", use_container_width=True):
             with st.spinner("Estrazione ed allineamento tensori temporali in corso..."):
-                # Sostituito con il master sync istituzionale che abbiamo creato
                 sync_all_data()
                 st.cache_data.clear()
                 st.rerun()
@@ -252,7 +250,7 @@ def render_page1():
             text=df_matrix.map(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/D").values,
             texttemplate="%{text}",
             showscale=False,
-            xgag=2, ygap=2
+            xgap=2, ygap=2
         ))
         
         fig_hm.update_layout(
@@ -271,12 +269,11 @@ def render_page1():
     st.divider()
 
     # ==========================================================
-    # MODULO CICLO ECONOMICO E HARD VETO
+    # MODULO CICLO ECONOMICO E HARD VETO (Regola 4 Rispettata)
     # ==========================================================
     st.markdown("### 🧭 Posizionamento nel Ciclo Economico")
     with st.spinner("Estrazione tassi di rendimento e computo delle pendenze..."):
-        # Se utilizzi il database unificato, calcoliamo i macro metrics
-        # L'ISM PMI è ora integrato in macro_metrics
+        # L'interfaccia passa il DB master (df) già caricato, senza chiamare API aggiuntive.
         fase_attuale, raw_phase, veto_applied, macro_metrics = calculate_macro_cycle_phase(df, dominant_regime)
 
     if veto_applied:
@@ -305,12 +302,10 @@ def render_page1():
                 )
         st.write("")
         
-        # [MODIFICA: Aggiunto ISM PMI nella colonna centrale espansa]
         mc1, mc2, mc3, mc4, mc5 = st.columns(5)
         mc1.metric("Spread 10Y-2Y", f"{macro_metrics.get('Spread_10Y_2Y', 0):.2f} pts")
         mc2.metric("Pendenza Rame/Oro (40D)", f"{macro_metrics.get('Pendenza_Cu_Au_40D', 0):+.3f}")
         
-        # INNESTO ISM PMI: Valutazione matematica rispetto alla soglia dei 50 punti (Regola 2)
         ism_val = macro_metrics.get('ISM_PMI', 'N/D')
         ism_status = "🟢 ESPANSIONE" if isinstance(ism_val, float) and ism_val >= 50 else ("🔴 CONTRAZIONE" if isinstance(ism_val, float) else "⚪ NEUTRO")
         mc3.metric("US ISM PMI", f"{ism_val}", ism_status, delta_color="normal" if isinstance(ism_val, float) and ism_val >= 50 else "inverse")
@@ -329,7 +324,6 @@ def render_page1():
     with c1:
         st.markdown("<h4 style='font-size:15px; color:#cbd5e1; font-weight: 600;'>1. Liquidità Netta Estesa (Miliardi $)</h4>", unsafe_allow_html=True)
         if 'Net_Liquidity' in df.columns and not df['Net_Liquidity'].dropna().empty:
-            # Ridisegno grafico dividendo per 1000 per mostrare Miliardi come su MacroMicro
             df_liq = df.dropna(subset=['Net_Liquidity']).tail(250).copy()
             df_liq['Net_Liquidity_Bil'] = df_liq['Net_Liquidity'] / 1000
             st.plotly_chart(px.area(df_liq, x="Data", y="Net_Liquidity_Bil", color_discrete_sequence=['#14b8a6'], template='plotly_dark'), use_container_width=True)
