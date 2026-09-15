@@ -6,13 +6,11 @@ import yfinance as yf
 import os
 import math
 from datetime import datetime, timedelta
-import pandas_datareader.data as web
 from scipy.stats import linregress
 
 DB_FILE = "macro_database.csv"
 GOOGLE_BRIDGE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSeeY57SBwd6BftA2Bq8C0nyzzT3wj9WRWOihDF7QE-COPXhC4r2RN_k_BRgZke1nU2BbKT8oRlsXOX/pub?gid=1412711569&single=true&output=csv"
 
-# [MODIFICA 1]: Colonne istituzionali per i modelli macro
 COLUMNS = [
     "Data", "VIX1D", "VIX9D", "VIX", "VIX3M", "VIX6M", "VIX1Y", "VVIX", "MOVE", "SKEW", 
     "DXY", "DIX", "GEX", "SPY", "RSP", "HYG", "XLY", "XLP", "TLT", "P_C", "GLD", "USO", 
@@ -45,9 +43,6 @@ TIMEFRAMES_CALENDAR = {
     "Δ 5Y": timedelta(days=1825)
 }
 
-# ==========================================================
-# FASE 1: FETCHING DATI EOD - RIGORE ASSOLUTO E TOLLERANZA ZERO
-# ==========================================================
 def load_db():
     if os.path.exists(DB_FILE):
         df = pd.read_csv(DB_FILE)
@@ -69,7 +64,6 @@ def save_db(df):
     df.to_csv(DB_FILE, index=False)
 
 def fetch_yahoo_data(days=365):
-    # [CORREZIONE STRUTTURALE]: Aggiunto "GC=F": "Gold" per permettere il calcolo Rame/Oro.
     tickers_map = {
         "^VIX1D": "VIX1D", "^VIX9D": "VIX9D", "^VIX": "VIX", "^VIX3M": "VIX3M", 
         "^VIX6M": "VIX6M", "^VIX1Y": "VIX1Y", "^VVIX": "VVIX", "^SKEW": "SKEW", 
@@ -99,12 +93,8 @@ def fetch_yahoo_data(days=365):
     except Exception:
         return pd.DataFrame(columns=['Data'] + list(tickers_map.values()))
 
-# [CORREZIONE STRUTTURALE]: Rimosso ISM PMI (NAPM) per impedire il blocco da parte di FRED
+# [ESTRAZIONE DIRETTA FRED CSV - Bypassa i blocchi di pandas_datareader]
 def fetch_institutional_macro_data(days=365):
-    """
-    Estrae dati diretti da FRED: Tassi (10Y, 2Y, 30Y), Componenti Liquidità Fed.
-    Risolve il problema dei buchi temporali. NAPM rimosso per blocco copyright FRED.
-    """
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days)
     
@@ -113,27 +103,44 @@ def fetch_institutional_macro_data(days=365):
         'WALCL': 'WALCL_raw', 'WTREGEN': 'TGA_raw', 'RRPONTSYD': 'REPO_raw'
     }
     
-    try:
-        df_fred = web.DataReader(list(fred_series.keys()), 'fred', start_date, end_date)
-        df_fred = df_fred.rename(columns=fred_series)
-        
-        # ALLINEAMENTO MATEMATICO: Forward fill obbligatorio
-        df_fred.ffill(inplace=True)
-        
-        # Calcolo esatto US Net Liquidity (Senza NaN che azzerano il calcolo)
-        df_fred['Net_Liquidity'] = df_fred['WALCL_raw'] - df_fred['TGA_raw'].fillna(0) - df_fred['REPO_raw'].fillna(0)
-        
-        df_fred = df_fred.reset_index().rename(columns={'DATE': 'Data'})
-        df_fred['Data'] = pd.to_datetime(df_fred['Data']).dt.tz_localize(None).dt.normalize()
-        
-        # Inizializzo ISM_PMI a NaN per rispetto della Regola 1 (Nessun dato inventato)
-        df_fred['ISM_PMI'] = np.nan
-        
-        cols_to_return = ['Data', '10Y_Yield', '2Y_Yield', '30Y_Yield', 'ISM_PMI', 'Net_Liquidity']
-        return df_fred[cols_to_return].dropna(subset=['Data']).sort_values('Data')
-    except Exception as e:
-        print(f"ERRORE CRITICO API FRED: {e}")
+    df_fred = pd.DataFrame()
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    
+    for fred_id, col_name in fred_series.items():
+        url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={fred_id}&cosd={start_date.strftime('%Y-%m-%d')}&coed={end_date.strftime('%Y-%m-%d')}"
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                df_temp = pd.read_csv(io.StringIO(response.text), parse_dates=['DATE'], na_values='.')
+                df_temp = df_temp.rename(columns={'DATE': 'Data', fred_id: col_name}).set_index('Data')
+                if df_fred.empty:
+                    df_fred = df_temp
+                else:
+                    df_fred = df_fred.join(df_temp, how='outer')
+        except Exception as e:
+            print(f"ERRORE FRED ({fred_id}): {e}")
+            
+    if df_fred.empty:
         return pd.DataFrame(columns=['Data', '10Y_Yield', '2Y_Yield', '30Y_Yield', 'ISM_PMI', 'Net_Liquidity'])
+        
+    df_fred.ffill(inplace=True)
+    
+    if set(['WALCL_raw', 'TGA_raw', 'REPO_raw']).issubset(df_fred.columns):
+        df_fred['Net_Liquidity'] = df_fred['WALCL_raw'] - df_fred['TGA_raw'].fillna(0) - df_fred['REPO_raw'].fillna(0)
+    else:
+        df_fred['Net_Liquidity'] = np.nan
+        
+    df_fred = df_fred.reset_index()
+    df_fred['Data'] = pd.to_datetime(df_fred['Data']).dt.tz_localize(None).dt.normalize()
+    df_fred['ISM_PMI'] = np.nan # Dato proprietario rimosso da FRED
+    
+    cols_to_return = ['Data', '10Y_Yield', '2Y_Yield', '30Y_Yield', 'ISM_PMI', 'Net_Liquidity']
+    available_cols = [c for c in cols_to_return if c in df_fred.columns]
+    for c in cols_to_return:
+        if c not in available_cols:
+            df_fred[c] = np.nan
+            
+    return df_fred[cols_to_return].dropna(subset=['Data']).sort_values('Data')
 
 def fetch_bridge_data():
     try:
@@ -182,9 +189,6 @@ def fetch_cboe_pc_ratio():
     except Exception:
         return pd.DataFrame(columns=['Data', 'P_C'])
 
-# ==========================================================
-# MASTER SYNC: Aggiornamento coordinato di tutti i dati
-# ==========================================================
 def sync_all_data():
     df_db = load_db()
     
@@ -215,9 +219,6 @@ def sync_all_data():
     save_db(df_db)
     return df_db
 
-# ==========================================================
-# FASE 2: MATRICE REGIMI
-# ==========================================================
 def fetch_regime_baskets_data(period="10y"):
     try:
         unique_tickers = sorted(list({ticker for basket in REGIME_BASKETS.values() for ticker in basket}))
@@ -254,7 +255,6 @@ def calculate_regime_matrix(df_prices):
         if not valid_tickers: continue
         
         basket_prices = df_prices[valid_tickers].ffill()
-        
         valid_current_slice = basket_prices.loc[:today]
         if valid_current_slice.empty: continue
         p_now = valid_current_slice.iloc[-1]
@@ -290,7 +290,6 @@ def calculate_regime_matrix(df_prices):
                                 p_past_dict[t] = np.nan
                         else:
                             p_past_dict[t] = np.nan
-                            
                 p_past = pd.Series(p_past_dict)
             
             roc = ((p_now - p_past) / p_past) * 100.0
@@ -318,7 +317,6 @@ def calculate_regime_matrix(df_prices):
     
     if "Δ 1M" in df_matrix.columns and "Δ 3M" in df_matrix.columns:
         df_classic = df_matrix[~df_matrix.index.isin(regimi_esclusi)]
-        
         momentum_score = (df_classic["Δ 1M"] * 0.3) + (df_classic["Δ 3M"] * 0.7)
         m_valid = momentum_score.dropna()
         
@@ -332,17 +330,13 @@ def calculate_regime_matrix(df_prices):
                 
     return df_matrix.round(2), dominant, confidence_pct
 
-# ==========================================================
-# FASE 3: MOTORE CICLO ECONOMICO 
-# ==========================================================
-# [CORREZIONE STRUTTURALE]: Blocco di sicurezza anti-NaN ripristinato.
+# [BLOCCO ANTI-COLLASSO INVALICABILE - REGOLA 2]
 def calculate_macro_cycle_phase(df_macro, predominant_regime):
     if df_macro.empty or len(df_macro) < 252:
         return "DATI INSUFFICIENTI", "N/D", False, {}
         
     df = df_macro.copy().ffill()
     
-    # Controlli di integrità: Se un asset vitale manca interamente, abortiamo.
     req_cols = ['10Y_Yield', '2Y_Yield', '30Y_Yield', 'Copper', 'Gold', 'TIPS_ETF']
     for col in req_cols:
         if col not in df.columns or df[col].isna().all():
@@ -351,8 +345,8 @@ def calculate_macro_cycle_phase(df_macro, predominant_regime):
     df['Spread_10Y_2Y'] = df['10Y_Yield'] - df['2Y_Yield']
     current_spread = df['Spread_10Y_2Y'].iloc[-1]
     
-    # Anticolapso se lo spread corrente è NaN nonostante il ffill
-    if pd.isna(current_spread):
+    # Se il calcolo finale è NaN, abortiamo l'operazione. Niente false contrazioni.
+    if pd.isna(current_spread) or pd.isna(df['Copper'].iloc[-1]) or pd.isna(df['Gold'].iloc[-1]):
         return "ERRORE DATI", "N/D", False, {}
     
     df['Copper_Gold_Ratio'] = df['Copper'] / df['Gold']
@@ -396,9 +390,6 @@ def calculate_macro_cycle_phase(df_macro, predominant_regime):
     }
     return final_phase, raw_phase, veto_applied, metrics
 
-# ==========================================================
-# FASE 4: Z-SCORE PROPENSIONE AL RISCHIO
-# ==========================================================
 def calculate_risk_propensity(df_master):
     if df_master.empty or len(df_master) < 252:
         return None, "DATI INSUFFICIENTI"
