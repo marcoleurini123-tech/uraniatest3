@@ -12,12 +12,12 @@ from scipy.stats import linregress
 DB_FILE = "macro_database.csv"
 GOOGLE_BRIDGE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSeeY57SBwd6BftA2Bq8C0nyzzT3wj9WRWOihDF7QE-COPXhC4r2RN_k_BRgZke1nU2BbKT8oRlsXOX/pub?gid=1412711569&single=true&output=csv"
 
-# [MODIFICA 1]: Aggiunte le colonne istituzionali necessarie per i modelli macro
+# [MODIFICA 1]: Colonne istituzionali per i modelli macro
 COLUMNS = [
     "Data", "VIX1D", "VIX9D", "VIX", "VIX3M", "VIX6M", "VIX1Y", "VVIX", "MOVE", "SKEW", 
     "DXY", "DIX", "GEX", "SPY", "RSP", "HYG", "XLY", "XLP", "TLT", "P_C", "GLD", "USO", 
     "Net_Liquidity", "M2",
-    "10Y_Yield", "2Y_Yield", "30Y_Yield", "Copper", "TIPS_ETF", "ISM_PMI"
+    "10Y_Yield", "2Y_Yield", "30Y_Yield", "Copper", "Gold", "TIPS_ETF", "ISM_PMI"
 ]
 
 REGIME_BASKETS = {
@@ -69,13 +69,13 @@ def save_db(df):
     df.to_csv(DB_FILE, index=False)
 
 def fetch_yahoo_data(days=365):
-    # [MODIFICA 2]: Aggiunti Rame (HG=F) e TIPS (TIP) al flusso principale per avere i dati storicizzati
+    # [CORREZIONE STRUTTURALE]: Aggiunto "GC=F": "Gold" per permettere il calcolo Rame/Oro.
     tickers_map = {
         "^VIX1D": "VIX1D", "^VIX9D": "VIX9D", "^VIX": "VIX", "^VIX3M": "VIX3M", 
         "^VIX6M": "VIX6M", "^VIX1Y": "VIX1Y", "^VVIX": "VVIX", "^SKEW": "SKEW", 
         "DX-Y.NYB": "DXY", "SPY": "SPY", "RSP": "RSP", "XLY": "XLY", "XLP": "XLP", 
         "HYG": "HYG", "TLT": "TLT", "GLD": "GLD", "USO": "USO",
-        "HG=F": "Copper", "GC=F": "Gold","TIP": "TIPS_ETF"
+        "HG=F": "Copper", "GC=F": "Gold", "TIP": "TIPS_ETF"
     }
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days)
@@ -99,27 +99,25 @@ def fetch_yahoo_data(days=365):
     except Exception:
         return pd.DataFrame(columns=['Data'] + list(tickers_map.values()))
 
-# [MODIFICA 3 - CRITICA]: Creazione funzione istituzionale per Liquidità e Tassi FRED (Regola 1 e 4)
+# [CORREZIONE STRUTTURALE]: Rimosso ISM PMI (NAPM) per impedire il blocco da parte di FRED
 def fetch_institutional_macro_data(days=365):
     """
-    Estrae dati diretti da FRED: Tassi (10Y, 2Y, 30Y), Componenti Liquidità Fed, ISM PMI
-    Risolve il problema dei buchi temporali e calcola la VERA Net Liquidity.
+    Estrae dati diretti da FRED: Tassi (10Y, 2Y, 30Y), Componenti Liquidità Fed.
+    Risolve il problema dei buchi temporali. NAPM rimosso per blocco copyright FRED.
     """
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days)
     
-    # DGS10/2/30 = Tassi Treasury, WALCL = Bilancio, WTREGEN = TGA, RRPONTSYD = Repo, NAPM = ISM PMI
     fred_series = {
         'DGS10': '10Y_Yield', 'DGS2': '2Y_Yield', 'DGS30': '30Y_Yield',
-        'WALCL': 'WALCL_raw', 'WTREGEN': 'TGA_raw', 'RRPONTSYD': 'REPO_raw',
-        'NAPM': 'ISM_PMI'
+        'WALCL': 'WALCL_raw', 'WTREGEN': 'TGA_raw', 'RRPONTSYD': 'REPO_raw'
     }
     
     try:
         df_fred = web.DataReader(list(fred_series.keys()), 'fred', start_date, end_date)
         df_fred = df_fred.rename(columns=fred_series)
         
-        # ALLINEAMENTO MATEMATICO: Forward fill obbligatorio per tassi e liquidità (Regola 2)
+        # ALLINEAMENTO MATEMATICO: Forward fill obbligatorio
         df_fred.ffill(inplace=True)
         
         # Calcolo esatto US Net Liquidity (Senza NaN che azzerano il calcolo)
@@ -128,11 +126,13 @@ def fetch_institutional_macro_data(days=365):
         df_fred = df_fred.reset_index().rename(columns={'DATE': 'Data'})
         df_fred['Data'] = pd.to_datetime(df_fred['Data']).dt.tz_localize(None).dt.normalize()
         
-        # Drop delle colonne raw non necessarie nel DB finale
+        # Inizializzo ISM_PMI a NaN per rispetto della Regola 1 (Nessun dato inventato)
+        df_fred['ISM_PMI'] = np.nan
+        
         cols_to_return = ['Data', '10Y_Yield', '2Y_Yield', '30Y_Yield', 'ISM_PMI', 'Net_Liquidity']
         return df_fred[cols_to_return].dropna(subset=['Data']).sort_values('Data')
     except Exception as e:
-        # Fallback sicuro senza invenzioni
+        print(f"ERRORE CRITICO API FRED: {e}")
         return pd.DataFrame(columns=['Data', '10Y_Yield', '2Y_Yield', '30Y_Yield', 'ISM_PMI', 'Net_Liquidity'])
 
 def fetch_bridge_data():
@@ -141,8 +141,6 @@ def fetch_bridge_data():
         response.raise_for_status()
         df = pd.read_csv(io.StringIO(response.text))
         df.columns = df.columns.str.strip()
-        # [Nota]: Se usi fetch_institutional_macro_data, la Net_Liquidity da qui diventa ridondante, 
-        # ma la manteniamo per sicurezza e per M2/MOVE
         col_mapping = {'Date': 'Data', 'Net_Liquidity': 'Net_Liquidity_Bridge', 'M2': 'M2', 'MOVE': 'MOVE'}
         df = df.rename(columns=lambda x: col_mapping.get(x, x))
         if 'Data' not in df.columns: return pd.DataFrame(columns=["Data", "M2", "MOVE"])
@@ -184,28 +182,18 @@ def fetch_cboe_pc_ratio():
     except Exception:
         return pd.DataFrame(columns=['Data', 'P_C'])
 
-
 # ==========================================================
-# MASTER SYNC: Aggiornamento coordinato di tutti i dati (Regola 4)
+# MASTER SYNC: Aggiornamento coordinato di tutti i dati
 # ==========================================================
 def sync_all_data():
-    """
-    Esegue il fetch di tutte le fonti, unisce i dati in modo pulito 
-    e salva nel database CSV (Livello 1 completo).
-    """
     df_db = load_db()
     
-    # 1. Fetch YF
     df_yf = fetch_yahoo_data()
-    # 2. Fetch FRED Istituzionale (Tassi, Liquidity, ISM)
     df_fred = fetch_institutional_macro_data()
-    # 3. Fetch Bridge (M2, MOVE)
     df_bridge = fetch_bridge_data()
-    # 4. Squeeze & CBOE
     df_dix = fetch_squeezemetrics_data()
     df_pc = fetch_cboe_pc_ratio()
     
-    # Merge vettoriale su Data
     if not df_yf.empty:
         df_db = pd.merge(df_db, df_yf, on='Data', how='outer', suffixes=('', '_new'))
         for col in df_yf.columns:
@@ -214,7 +202,6 @@ def sync_all_data():
                     df_db[col] = df_db[f"{col}_new"].combine_first(df_db[col])
                     df_db.drop(columns=[f"{col}_new"], inplace=True)
                     
-    # Ripetizione per gli altri dataframe
     for df_temp in [df_fred, df_bridge, df_dix, df_pc]:
         if not df_temp.empty:
             df_db = pd.merge(df_db, df_temp, on='Data', how='outer', suffixes=('', '_new'))
@@ -224,13 +211,12 @@ def sync_all_data():
                         df_db[col] = df_db[f"{col}_new"].combine_first(df_db[col])
                         df_db.drop(columns=[f"{col}_new"], inplace=True)
     
-    # Pulizia, FFill e salvataggio
     df_db = df_db.sort_values('Data').ffill()
     save_db(df_db)
     return df_db
 
 # ==========================================================
-# FASE 2: MATRICE REGIMI (Invariato - Ottimizzato)
+# FASE 2: MATRICE REGIMI
 # ==========================================================
 def fetch_regime_baskets_data(period="10y"):
     try:
@@ -324,7 +310,6 @@ def calculate_regime_matrix(df_prices):
     confidence_pct = 0.0
     dominant = "N/D"
 
-    # ESCLUSIONE DEI MODELLI DEBASEMENT PER ALLINEAMENTO A QUANTATSE (7 STATI CLASSICI)
     regimi_esclusi = [
         "DOLLAR WEAKNESS/GLOBAL REBALANCING +BITCOIN", 
         "DEBASEMENT AGGRESSIVO", 
@@ -334,14 +319,11 @@ def calculate_regime_matrix(df_prices):
     if "Δ 1M" in df_matrix.columns and "Δ 3M" in df_matrix.columns:
         df_classic = df_matrix[~df_matrix.index.isin(regimi_esclusi)]
         
-        # BARICENTRO TRIMESTRALE PURO: 70% a 3M, 30% a 1M
         momentum_score = (df_classic["Δ 1M"] * 0.3) + (df_classic["Δ 3M"] * 0.7)
         m_valid = momentum_score.dropna()
         
         if not m_valid.empty:
             dominant = m_valid.idxmax()
-            
-            # CALCOLO DELLA PERCENTUALE DI DOMINANZA DIRETTO E STABILE
             total_score = m_valid.clip(lower=0).sum()
             if total_score > 0:
                 confidence_pct = round(float(m_valid[dominant] / total_score * 100.0), 1)
@@ -351,53 +333,50 @@ def calculate_regime_matrix(df_prices):
     return df_matrix.round(2), dominant, confidence_pct
 
 # ==========================================================
-# FASE 3: MOTORE CICLO ECONOMICO (Calcolo Corretto Regola 2)
+# FASE 3: MOTORE CICLO ECONOMICO 
 # ==========================================================
+# [CORREZIONE STRUTTURALE]: Blocco di sicurezza anti-NaN ripristinato.
 def calculate_macro_cycle_phase(df_macro, predominant_regime):
-    # [MODIFICA 4]: Ora usa il database centralizzato, non fa chiamate API volanti (Regola 4)
     if df_macro.empty or len(df_macro) < 252:
         return "DATI INSUFFICIENTI", "N/D", False, {}
         
     df = df_macro.copy().ffill()
     
-    # Controlli di integrità: usciamo con errore controllato se mancano i dati
+    # Controlli di integrità: Se un asset vitale manca interamente, abortiamo.
     req_cols = ['10Y_Yield', '2Y_Yield', '30Y_Yield', 'Copper', 'Gold', 'TIPS_ETF']
     for col in req_cols:
-        if col not in df.columns:
+        if col not in df.columns or df[col].isna().all():
             return "ERRORE DATI", "N/D", False, {}
 
-    # Calcolo Spread Matematico
     df['Spread_10Y_2Y'] = df['10Y_Yield'] - df['2Y_Yield']
     current_spread = df['Spread_10Y_2Y'].iloc[-1]
     
-    # Calcolo Pendenza Rame/Oro su finestra di 40 giorni
+    # Anticolapso se lo spread corrente è NaN nonostante il ffill
+    if pd.isna(current_spread):
+        return "ERRORE DATI", "N/D", False, {}
+    
     df['Copper_Gold_Ratio'] = df['Copper'] / df['Gold']
     window = 40
     if len(df) >= window:
         y_vals = df['Copper_Gold_Ratio'].iloc[-window:].values
         x_vals = np.arange(len(y_vals))
-        # Linregress reale, no approssimazioni
         slope, _, _, _, _ = linregress(x_vals, y_vals)
         cg_slope = slope / df['Copper_Gold_Ratio'].iloc[-window] * 1000
     else: cg_slope = 0.0
 
-    # Calcolo Z-Score Tassi Reali (Regola 2: Z-Score storico su 252 periodi)
     mean_tips = df['TIPS_ETF'].rolling(252).mean().iloc[-1]
     std_tips = df['TIPS_ETF'].rolling(252).std().iloc[-1]
     z_real_rates = - (df['TIPS_ETF'].iloc[-1] - mean_tips) / (std_tips + 1e-9)
 
-    # Calcolo Z-Score 30Y Treasury
     mean_30y = df['30Y_Yield'].rolling(252).mean().iloc[-1]
     std_30y = df['30Y_Yield'].rolling(252).std().iloc[-1]
     z_30y = (df['30Y_Yield'].iloc[-1] - mean_30y) / (std_30y + 1e-9)
 
-    # Logica cruda del Modello Macro
     if current_spread > 0 and cg_slope > 0: raw_phase = "Espansione"
     elif current_spread > 0 and cg_slope <= 0: raw_phase = "Ripresa"
     elif current_spread <= 0 and cg_slope > 0: raw_phase = "Picco / Stagflazione"
     else: raw_phase = "Contrazione"
 
-    # VETO ALGORITMICO
     veto_applied = False
     final_phase = raw_phase
     regimi_antitetici = ["STAGFLATION"]
@@ -406,7 +385,6 @@ def calculate_macro_cycle_phase(df_macro, predominant_regime):
         veto_applied = True
         final_phase = "Picco / Stagflazione" if cg_slope >= 0 else "Contrazione"
 
-    # Estrazione PMI ISM (se disponibile) per arricchire l'output macro
     ism_val = df['ISM_PMI'].iloc[-1] if 'ISM_PMI' in df.columns else np.nan
 
     metrics = {
@@ -414,12 +392,12 @@ def calculate_macro_cycle_phase(df_macro, predominant_regime):
         "Pendenza_Cu_Au_40D": round(cg_slope, 3),
         "Z_Score_Tassi_Reali": round(z_real_rates, 2),
         "Z_Score_30Y_Yield": round(z_30y, 2),
-        "ISM_PMI": round(ism_val, 2) if pd.notnull(ism_val) else "N/D"
+        "ISM_PMI": round(ism_val, 2) if pd.notna(ism_val) else "N/D"
     }
     return final_phase, raw_phase, veto_applied, metrics
 
 # ==========================================================
-# FASE 4: Z-SCORE PROPENSIONE AL RISCHIO (Invariato)
+# FASE 4: Z-SCORE PROPENSIONE AL RISCHIO
 # ==========================================================
 def calculate_risk_propensity(df_master):
     if df_master.empty or len(df_master) < 252:
@@ -496,8 +474,3 @@ def evaluate_risk_override(df_db):
     if net_liq_contraction: reasons.append("Contrazione mensile netta della Liquidità FED > 6.5%")
     
     return is_risk_off, reasons, skew_val, vix_val
-
-# ==========================================================
-# GESTIONE SCHEDULAZIONE (Sostituisce le chiamate isolate)
-# ==========================================================
-# Esegui sync_all_data() prima di calcolare i modelli in app.py
