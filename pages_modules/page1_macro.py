@@ -9,7 +9,9 @@ from backend_engine import (
     fetch_squeezemetrics_data, fetch_cboe_pc_ratio, COLUMNS,
     fetch_regime_baskets_data, calculate_regime_matrix,
     fetch_macro_cycle_data, calculate_macro_cycle_phase,
-    calculate_risk_propensity, evaluate_risk_override
+    calculate_risk_propensity, evaluate_risk_override,
+    # Assicurati che sync_all_data o la funzione istituzionale siano chiamate se usi il master sync
+    sync_all_data
 )
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -92,27 +94,8 @@ def render_page1():
         
         if st.button("2. SINCRONIZZA FLUSSI API", use_container_width=True):
             with st.spinner("Estrazione ed allineamento tensori temporali in corso..."):
-                d_y = fetch_yahoo_data(365)
-                d_b = fetch_bridge_data()
-                d_sq = fetch_squeezemetrics_data()
-                d_pc = fetch_cboe_pc_ratio()
-                
-                fetched_df = pd.merge(d_y, d_b, on='Data', how='outer')
-                if not d_sq.empty: fetched_df = pd.merge(fetched_df, d_sq, on='Data', how='outer')
-                if not d_pc.empty: fetched_df = pd.merge(fetched_df, d_pc, on='Data', how='outer')
-
-                if not df.empty:
-                    fetched_df = fetched_df.set_index('Data')
-                    local_df = df.set_index('Data')
-                    final_df = local_df.combine_first(fetched_df).reset_index()
-                else:
-                    final_df = fetched_df
-
-                for col in COLUMNS:
-                    if col not in final_df.columns: final_df[col] = np.nan
-                final_df = final_df[COLUMNS]
-                final_df = final_df.sort_values("Data").ffill(limit=7).dropna(subset=['Data'])
-                save_db(final_df)
+                # Sostituito con il master sync istituzionale che abbiamo creato
+                sync_all_data()
                 st.cache_data.clear()
                 st.rerun()
 
@@ -126,10 +109,11 @@ def render_page1():
     df[num_cols] = df[num_cols].ffill(limit=7)
 
     # Indicatori Calcolati Matematicamente
-    df['Liq_Delta_5D'] = df['Net_Liquidity'].pct_change(periods=5) * 100
-    df['Ratio_GO'] = np.where(df['USO'] > 0, df['GLD'] / df['USO'], np.nan)
-    df['Ratio_Risk'] = np.where(df['XLP'] > 0, df['XLY'] / df['XLP'], np.nan)
-    df['Ratio_Br'] = np.where(df['RSP'] > 0, df['SPY'] / df['RSP'], np.nan)
+    if 'Net_Liquidity' in df.columns:
+        df['Liq_Delta_5D'] = df['Net_Liquidity'].pct_change(periods=5) * 100
+    df['Ratio_GO'] = np.where(df['USO'] > 0, df['GLD'] / df['USO'], np.nan) if 'USO' in df.columns and 'GLD' in df.columns else np.nan
+    df['Ratio_Risk'] = np.where(df['XLP'] > 0, df['XLY'] / df['XLP'], np.nan) if 'XLP' in df.columns and 'XLY' in df.columns else np.nan
+    df['Ratio_Br'] = np.where(df['RSP'] > 0, df['SPY'] / df['RSP'], np.nan) if 'RSP' in df.columns and 'SPY' in df.columns else np.nan
 
     last = df.iloc[-1]
     
@@ -245,41 +229,36 @@ def render_page1():
     st.write("")
     
     # ==========================================================
-    # MATRICE HEATMAP CON NORMALIZZAZIONE PER COLONNA (Min-Max Scaling)
+    # MATRICE HEATMAP
     # ==========================================================
     st.markdown("### 🗺️ Matrice dei Regimi di Mercato")
 
     if not df_matrix.empty:
-        # Conversione sicura in formato puramente numerico per le operazioni matematiche
         df_numeric = df_matrix.apply(pd.to_numeric, errors='coerce')
-        
-        # Algoritmo di normalizzazione Min-Max indipendente per ciascuna colonna
         df_norm = (df_numeric - df_numeric.min()) / (df_numeric.max() - df_numeric.min())
-        # Protezione anti-crash nel caso in cui una colonna abbia valori identici o vuoti (fissato a 0.5 giallo mediano)
         df_norm = df_norm.fillna(0.5)
 
         fig_hm = go.Figure(data=go.Heatmap(
-            z=df_norm.values, # Fornisce la scala 0.0 - 1.0 al motore cromatico
+            z=df_norm.values, 
             x=df_matrix.columns,
             y=df_matrix.index,
             colorscale=[
-                [0.0, '#ef4444'], # Rosso (Peggiore performante della singola colonna)
-                [0.5, '#fef08a'], # Giallo (Mediano della singola colonna)
-                [1.0, '#22c55e']  # Verde (Miglior performante della singola colonna)
+                [0.0, '#ef4444'], 
+                [0.5, '#fef08a'], 
+                [1.0, '#22c55e']  
             ],
             zmin=0.0,
             zmax=1.0,
-            # Testo formattato che ignora la normalizzazione mostrando i dati reali
             text=df_matrix.map(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/D").values,
             texttemplate="%{text}",
             showscale=False,
-            xgap=2, ygap=2
+            xgag=2, ygap=2
         ))
         
         fig_hm.update_layout(
             template='plotly_dark', 
             margin=dict(l=0, r=0, t=10, b=0),
-            height=500, # Aumentata l'altezza per accomodare le 10 righe
+            height=500, 
             xaxis=dict(side='top', tickfont=dict(size=12, color="#cbd5e1")),
             yaxis=dict(tickfont=dict(size=11, color="#f8fafc"), autorange="reversed"),
             plot_bgcolor='rgba(0,0,0,0)',
@@ -296,13 +275,18 @@ def render_page1():
     # ==========================================================
     st.markdown("### 🧭 Posizionamento nel Ciclo Economico")
     with st.spinner("Estrazione tassi di rendimento e computo delle pendenze..."):
-        df_macro = get_cached_macro_data()
-        fase_attuale, raw_phase, veto_applied, macro_metrics = calculate_macro_cycle_phase(df_macro, dominant_regime)
+        # Se utilizzi il database unificato, calcoliamo i macro metrics
+        # L'ISM PMI è ora integrato in macro_metrics
+        fase_attuale, raw_phase, veto_applied, macro_metrics = calculate_macro_cycle_phase(df, dominant_regime)
 
     if veto_applied:
-        st.warning(f"⚠️ VETO ALGORITMICO APPLICATO: L'algoritmo indicava originariamente '{raw_phase}'. L'output è stato forzato matematicamente a '{fase_attuale}' a causa del regime '{dominant_regime}'.")
+        st.markdown(f"""
+            <div style="background-color: #451A03; border-left: 5px solid #F59E0B; padding: 15px; border-radius: 4px; color: #FDE68A; margin-bottom: 20px;">
+                ⚠️ <b>VETO ALGORITMICO APPLICATO:</b> L'algoritmo indicava originariamente '{raw_phase}'. L'output è stato forzato matematicamente a '{fase_attuale}' a causa del regime '{dominant_regime}'.
+            </div>
+        """, unsafe_allow_html=True)
 
-    if fase_attuale != "DATI INSUFFICIENTI":
+    if fase_attuale != "DATI INSUFFICIENTI" and fase_attuale != "ERRORE DATI":
         quad_cols = st.columns(4)
         fasi_ciclo = ["Ripresa", "Espansione", "Picco / Stagflazione", "Contrazione"]
         for i, fase in enumerate(fasi_ciclo):
@@ -320,13 +304,21 @@ def render_page1():
                     """, unsafe_allow_html=True
                 )
         st.write("")
-        mc1, mc2, mc3, mc4 = st.columns(4)
+        
+        # [MODIFICA: Aggiunto ISM PMI nella colonna centrale espansa]
+        mc1, mc2, mc3, mc4, mc5 = st.columns(5)
         mc1.metric("Spread 10Y-2Y", f"{macro_metrics.get('Spread_10Y_2Y', 0):.2f} pts")
         mc2.metric("Pendenza Rame/Oro (40D)", f"{macro_metrics.get('Pendenza_Cu_Au_40D', 0):+.3f}")
-        mc3.metric("Z-Score Tassi Reali", f"{macro_metrics.get('Z_Score_Tassi_Reali', 0):+.2f} σ")
-        mc4.metric("Z-Score 30Y Treasury", f"{macro_metrics.get('Z_Score_30Y_Yield', 0):+.2f} σ")
+        
+        # INNESTO ISM PMI: Valutazione matematica rispetto alla soglia dei 50 punti (Regola 2)
+        ism_val = macro_metrics.get('ISM_PMI', 'N/D')
+        ism_status = "🟢 ESPANSIONE" if isinstance(ism_val, float) and ism_val >= 50 else ("🔴 CONTRAZIONE" if isinstance(ism_val, float) else "⚪ NEUTRO")
+        mc3.metric("US ISM PMI", f"{ism_val}", ism_status, delta_color="normal" if isinstance(ism_val, float) and ism_val >= 50 else "inverse")
+        
+        mc4.metric("Z-Score Tassi Reali", f"{macro_metrics.get('Z_Score_Tassi_Reali', 0):+.2f} σ")
+        mc5.metric("Z-Score 30Y Treasury", f"{macro_metrics.get('Z_Score_30Y_Yield', 0):+.2f} σ")
     else:
-        st.warning("⚠️ Dati macro insufficienti per il calcolo delle fasi del ciclo.")
+        st.warning(f"⚠️ {fase_attuale}: Impossibile calcolare il ciclo. Assicurati di aver sincronizzato i flussi API istituzionali.")
 
     st.divider()
 
@@ -335,9 +327,12 @@ def render_page1():
     # ==========================================================
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("<h4 style='font-size:15px; color:#cbd5e1; font-weight: 600;'>1. Liquidità Netta Estesa</h4>", unsafe_allow_html=True)
+        st.markdown("<h4 style='font-size:15px; color:#cbd5e1; font-weight: 600;'>1. Liquidità Netta Estesa (Miliardi $)</h4>", unsafe_allow_html=True)
         if 'Net_Liquidity' in df.columns and not df['Net_Liquidity'].dropna().empty:
-            st.plotly_chart(px.area(df.dropna(subset=['Net_Liquidity']).tail(250), x="Data", y="Net_Liquidity", color_discrete_sequence=['#14b8a6'], template='plotly_dark'), use_container_width=True)
+            # Ridisegno grafico dividendo per 1000 per mostrare Miliardi come su MacroMicro
+            df_liq = df.dropna(subset=['Net_Liquidity']).tail(250).copy()
+            df_liq['Net_Liquidity_Bil'] = df_liq['Net_Liquidity'] / 1000
+            st.plotly_chart(px.area(df_liq, x="Data", y="Net_Liquidity_Bil", color_discrete_sequence=['#14b8a6'], template='plotly_dark'), use_container_width=True)
     with c2:
         st.markdown("<h4 style='font-size:15px; color:#cbd5e1; font-weight: 600;'>2. M2 Money Supply</h4>", unsafe_allow_html=True)
         if 'M2' in df.columns and not df['M2'].dropna().empty:
