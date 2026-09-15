@@ -75,7 +75,7 @@ def fetch_yahoo_data(days=365):
         "^VIX6M": "VIX6M", "^VIX1Y": "VIX1Y", "^VVIX": "VVIX", "^SKEW": "SKEW", 
         "DX-Y.NYB": "DXY", "SPY": "SPY", "RSP": "RSP", "XLY": "XLY", "XLP": "XLP", 
         "HYG": "HYG", "TLT": "TLT", "GLD": "GLD", "USO": "USO",
-        "HG=F": "Copper", "TIP": "TIPS_ETF"
+        "HG=F": "Copper", "GC=F": "Gold","TIP": "TIPS_ETF"
     }
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days)
