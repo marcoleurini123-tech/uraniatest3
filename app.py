@@ -1,5 +1,6 @@
 import streamlit as st
 from pages_modules.page1_macro import render_page1
+from pages_modules.page2_cot import render_page2
 
 # 1. Configurazione Globale dell'Infrastruttura
 st.set_page_config(
@@ -9,7 +10,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 2. Iniezione CSS Corretta (Header visibile per permettere il toggle della sidebar)
+# 2. Iniezione CSS Corretta
 st.markdown("""
     <style>
         .block-container { padding-top: 1.5rem; padding-bottom: 0rem; }
@@ -43,8 +44,7 @@ def main():
         render_page1()
         
     elif modulo_attivo == "2. Volumi, COT & Z-Score":
-        st.title("2. Analisi Flussi, COT e Stagionalità")
-        st.warning("Modulo in attesa di implementazione matematica (Regola 4).")
+        render_page2()
         
     elif modulo_attivo == "3. Strutture Derivati & Coperture":
         st.title("3. Gestione Coperture e Opzioni")
