@@ -96,16 +96,15 @@ def fetch_yahoo_data(days=365):
 
 def fetch_institutional_macro_data(days=365):
     """
-    MODULO 1: DATA FETCHING ISTITUZIONALE (Connessione API Ufficiale FRED)
-    Regola 3: Estrazione sicura della chiave tramite st.secrets.
-    Sistema di diagnostica anti-allucinazione attivato.
+    MODULO 1: DATA FETCHING ISTITUZIONALE
+    Regola 1 & 3: Sollevamento di eccezioni critiche (raise) in caso di anomalia. 
+    Nessun fallimento silenzioso tollerato.
     """
-    try:
-        fred_api_key = st.secrets["FRED_API_KEY"]
-    except KeyError:
-        st.error("🚨 ERRORE DI SICUREZZA: 'FRED_API_KEY' non trovata. Controlla i Secrets di Streamlit.")
-        return pd.DataFrame()
-
+    if "FRED_API_KEY" not in st.secrets:
+        raise KeyError("🚨 REGOLA 3 VIOLATA: 'FRED_API_KEY' non trovata in st.secrets. Controlla l'interfaccia di configurazione.")
+        
+    fred_api_key = st.secrets["FRED_API_KEY"].strip()
+    
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days)
     
@@ -119,34 +118,33 @@ def fetch_institutional_macro_data(days=365):
     for series_id, col_name in fred_series.items():
         url = f"https://api.stlouisfed.org/fred/series/observations?series_id={series_id}&api_key={fred_api_key}&file_type=json&observation_start={start_date.strftime('%Y-%m-%d')}&observation_end={end_date.strftime('%Y-%m-%d')}"
         
-        try:
-            response = requests.get(url, timeout=15)
+        response = requests.get(url, timeout=15)
+        
+        # ECCEZIONI CHIRURGICHE
+        if response.status_code == 400:
+            raise ValueError(f"🚨 ERRORE 400 FRED: Chiave API rifiutata o malformata. Hai inserito: '{fred_api_key}'")
+        elif response.status_code != 200:
+            raise ConnectionError(f"🚨 ERRORE DI RETE FRED ({series_id}): Status {response.status_code} - Dettaglio Server: {response.text}")
             
-            if response.status_code != 200:
-                st.error(f"🚨 ERRORE API FRED ({series_id}): Status {response.status_code} - Dettaglio: {response.text}")
-                continue
-                
-            data = response.json()
+        data = response.json()
+        if 'observations' not in data:
+            raise ValueError(f"🚨 ANOMALIA DATI FRED: L'endpoint non ha restituito il blocco 'observations' per la serie {series_id}.")
             
-            if 'observations' in data:
-                obs = data['observations']
-                df_temp = pd.DataFrame(obs)[['date', 'value']]
-                df_temp = df_temp.rename(columns={'date': 'Data', 'value': col_name})
-                df_temp['Data'] = pd.to_datetime(df_temp['Data'])
-                
-                # Regola 1: Gestione rigorosa dei punti (giorni festivi) forniti da FRED
-                df_temp[col_name] = pd.to_numeric(df_temp[col_name], errors='coerce')
-                df_temp = df_temp.set_index('Data')
-                
-                if df_fred.empty:
-                    df_fred = df_temp
-                else:
-                    df_fred = df_fred.join(df_temp, how='outer')
-        except Exception as e:
-            st.error(f"🚨 ECCEZIONE DI RETE FRED ({series_id}): {e}")
+        obs = data['observations']
+        df_temp = pd.DataFrame(obs)[['date', 'value']]
+        df_temp = df_temp.rename(columns={'date': 'Data', 'value': col_name})
+        df_temp['Data'] = pd.to_datetime(df_temp['Data'])
+        
+        df_temp[col_name] = pd.to_numeric(df_temp[col_name], errors='coerce')
+        df_temp = df_temp.set_index('Data')
+        
+        if df_fred.empty:
+            df_fred = df_temp
+        else:
+            df_fred = df_fred.join(df_temp, how='outer')
             
     if df_fred.empty:
-        return pd.DataFrame()
+        raise ValueError("🚨 ANOMALIA CALCOLO: Il dataframe derivato da FRED risulta completamente vuoto dopo l'iterazione.")
         
     df_fred.ffill(inplace=True)
     
@@ -158,8 +156,7 @@ def fetch_institutional_macro_data(days=365):
     df_fred = df_fred.reset_index()
     df_fred['Data'] = pd.to_datetime(df_fred['Data']).dt.tz_localize(None).dt.normalize()
     
-    # ISM escluso per copyright. Non si inventano dati.
-    df_fred['ISM_PMI'] = np.nan
+    df_fred['ISM_PMI'] = np.nan 
     
     cols_to_return = ['Data', '10Y_Yield', '2Y_Yield', '30Y_Yield', 'ISM_PMI', 'Net_Liquidity']
     available_cols = [c for c in cols_to_return if c in df_fred.columns]
@@ -221,6 +218,7 @@ def sync_all_data():
     df_db = load_db()
     
     df_yf = fetch_yahoo_data()
+    # Il blocco dell'app avverrà qui in caso di fallimento API, senza procedere oltre.
     df_fred = fetch_institutional_macro_data()
     df_bridge = fetch_bridge_data()
     df_dix = fetch_squeezemetrics_data()
@@ -358,7 +356,6 @@ def calculate_regime_matrix(df_prices):
                 
     return df_matrix.round(2), dominant, confidence_pct
 
-# [BLOCCO ANTI-COLLASSO INVALICABILE - REGOLA 2]
 def calculate_macro_cycle_phase(df_macro, predominant_regime):
     if df_macro.empty or len(df_macro) < 252:
         return "DATI INSUFFICIENTI", "N/D", False, {}
