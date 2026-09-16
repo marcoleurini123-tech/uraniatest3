@@ -1,3 +1,4 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
@@ -93,8 +94,18 @@ def fetch_yahoo_data(days=365):
     except Exception:
         return pd.DataFrame(columns=['Data'] + list(tickers_map.values()))
 
-# [ESTRAZIONE DIRETTA FRED CSV - Bypassa i blocchi di pandas_datareader]
 def fetch_institutional_macro_data(days=365):
+    """
+    MODULO 1: DATA FETCHING ISTITUZIONALE (Connessione API Ufficiale FRED)
+    Regola 3: Estrazione sicura della chiave tramite st.secrets.
+    Sistema di diagnostica anti-allucinazione attivato.
+    """
+    try:
+        fred_api_key = st.secrets["FRED_API_KEY"]
+    except KeyError:
+        st.error("🚨 ERRORE DI SICUREZZA: 'FRED_API_KEY' non trovata. Controlla i Secrets di Streamlit.")
+        return pd.DataFrame()
+
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days)
     
@@ -104,24 +115,38 @@ def fetch_institutional_macro_data(days=365):
     }
     
     df_fred = pd.DataFrame()
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     
-    for fred_id, col_name in fred_series.items():
-        url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={fred_id}&cosd={start_date.strftime('%Y-%m-%d')}&coed={end_date.strftime('%Y-%m-%d')}"
+    for series_id, col_name in fred_series.items():
+        url = f"https://api.stlouisfed.org/fred/series/observations?series_id={series_id}&api_key={fred_api_key}&file_type=json&observation_start={start_date.strftime('%Y-%m-%d')}&observation_end={end_date.strftime('%Y-%m-%d')}"
+        
         try:
-            response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code == 200:
-                df_temp = pd.read_csv(io.StringIO(response.text), parse_dates=['DATE'], na_values='.')
-                df_temp = df_temp.rename(columns={'DATE': 'Data', fred_id: col_name}).set_index('Data')
+            response = requests.get(url, timeout=15)
+            
+            if response.status_code != 200:
+                st.error(f"🚨 ERRORE API FRED ({series_id}): Status {response.status_code} - Dettaglio: {response.text}")
+                continue
+                
+            data = response.json()
+            
+            if 'observations' in data:
+                obs = data['observations']
+                df_temp = pd.DataFrame(obs)[['date', 'value']]
+                df_temp = df_temp.rename(columns={'date': 'Data', 'value': col_name})
+                df_temp['Data'] = pd.to_datetime(df_temp['Data'])
+                
+                # Regola 1: Gestione rigorosa dei punti (giorni festivi) forniti da FRED
+                df_temp[col_name] = pd.to_numeric(df_temp[col_name], errors='coerce')
+                df_temp = df_temp.set_index('Data')
+                
                 if df_fred.empty:
                     df_fred = df_temp
                 else:
                     df_fred = df_fred.join(df_temp, how='outer')
         except Exception as e:
-            print(f"ERRORE FRED ({fred_id}): {e}")
+            st.error(f"🚨 ECCEZIONE DI RETE FRED ({series_id}): {e}")
             
     if df_fred.empty:
-        return pd.DataFrame(columns=['Data', '10Y_Yield', '2Y_Yield', '30Y_Yield', 'ISM_PMI', 'Net_Liquidity'])
+        return pd.DataFrame()
         
     df_fred.ffill(inplace=True)
     
@@ -132,10 +157,13 @@ def fetch_institutional_macro_data(days=365):
         
     df_fred = df_fred.reset_index()
     df_fred['Data'] = pd.to_datetime(df_fred['Data']).dt.tz_localize(None).dt.normalize()
-    df_fred['ISM_PMI'] = np.nan # Dato proprietario rimosso da FRED
+    
+    # ISM escluso per copyright. Non si inventano dati.
+    df_fred['ISM_PMI'] = np.nan
     
     cols_to_return = ['Data', '10Y_Yield', '2Y_Yield', '30Y_Yield', 'ISM_PMI', 'Net_Liquidity']
     available_cols = [c for c in cols_to_return if c in df_fred.columns]
+    
     for c in cols_to_return:
         if c not in available_cols:
             df_fred[c] = np.nan
@@ -345,7 +373,6 @@ def calculate_macro_cycle_phase(df_macro, predominant_regime):
     df['Spread_10Y_2Y'] = df['10Y_Yield'] - df['2Y_Yield']
     current_spread = df['Spread_10Y_2Y'].iloc[-1]
     
-    # Se il calcolo finale è NaN, abortiamo l'operazione. Niente false contrazioni.
     if pd.isna(current_spread) or pd.isna(df['Copper'].iloc[-1]) or pd.isna(df['Gold'].iloc[-1]):
         return "ERRORE DATI", "N/D", False, {}
     
