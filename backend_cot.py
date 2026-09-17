@@ -1,16 +1,9 @@
+
+import os
 import pandas as pd
 import numpy as np
-import requests
-import zipfile
-import io
-from datetime import datetime
 
-# ==========================================================
-# DIZIONARIO ASSET CFTC (Derivato da Page 4)
-# Mappatura inversa per decodificare il database grezzo
-# ==========================================================
 CFTC_MAPPING = {
-    # Equities
     "E-MINI S&P 500 STOCK INDEX - CHICAGO MERCANTILE EXCHANGE": "SPX",
     "E-MINI S&P 500 - CHICAGO MERCANTILE EXCHANGE": "SPX",
     "VIX FUTURES - CBOE FUTURES EXCHANGE": "VIX",
@@ -19,16 +12,12 @@ CFTC_MAPPING = {
     "RUSSELL 2000 MINI INDEX FUTURE - ICE FUTURES U.S.": "Russell 2000",
     "RUSSELL E-MINI - CHICAGO MERCANTILE EXCHANGE": "Russell 2000",
     "NIKKEI STOCK AVERAGE - CHICAGO MERCANTILE EXCHANGE": "Nikkei",
-    
-    # Rates
     "10-YEAR U.S. TREASURY NOTES - CHICAGO BOARD OF TRADE": "10Y UST",
     "UST 10Y NOTE - CHICAGO BOARD OF TRADE": "10Y UST",
     "2-YEAR U.S. TREASURY NOTES - CHICAGO BOARD OF TRADE": "2Y UST",
     "2Y NOTE - CHICAGO BOARD OF TRADE": "2Y UST",
     "5-YEAR U.S. TREASURY NOTES - CHICAGO BOARD OF TRADE": "5Y UST",
     "U.S. TREASURY BONDS - CHICAGO BOARD OF TRADE": "UST Bonds",
-    
-    # Currencies
     "EURO FX - CHICAGO MERCANTILE EXCHANGE": "EUR",
     "JAPANESE YEN - CHICAGO MERCANTILE EXCHANGE": "JPY",
     "BRITISH POUND STERLING - CHICAGO MERCANTILE EXCHANGE": "GBP",
@@ -39,8 +28,6 @@ CFTC_MAPPING = {
     "NEW ZEALAND DOLLAR - CHICAGO MERCANTILE EXCHANGE": "NZD",
     "U.S. DOLLAR INDEX - ICE FUTURES U.S.": "USD Index",
     "USD INDEX - ICE FUTURES U.S.": "USD Index",
-    
-    # Commodities
     "GOLD - COMMODITY EXCHANGE INC.": "Gold",
     "SILVER - COMMODITY EXCHANGE INC.": "Silver",
     "COPPER-GRADE #1 - COMMODITY EXCHANGE INC.": "Copper",
@@ -58,121 +45,62 @@ CFTC_MAPPING = {
     "BITCOIN - CHICAGO MERCANTILE EXCHANGE": "BTC"
 }
 
-# ==========================================================
-# FASE 1: ESTRAZIONE DATI UFFICIALI CFTC (Regola 1)
-# ==========================================================
-def fetch_cftc_data(years_back=4):
+def fetch_cftc_data(years_back: int = 4) -> pd.DataFrame:
     """
-    Estrae i file ZIP 'Legacy Futures Only' dai server della CFTC.
-    Scarica 4 anni di dati per permettere un calcolo Z-Score solido a 156 settimane (3 anni).
-    Nessun dato fittizio in caso di errore.
+    Legge la matrice COT prioritaria dal database locale 'cot_history.csv' 
+    per garantire stabilità e conformità alla Regola 1 senza dipendere da timeout web.
     """
-    current_year = datetime.now().year
-    years = [str(current_year - i) for i in range(years_back)]
+    csv_path = "cot_history.csv"
     
-    dfs = []
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    
-    for year in years:
-        url = f"https://www.cftc.gov/files/dea/history/dea_fut_txt_{year}.zip"
+    if os.path.exists(csv_path):
         try:
-            response = requests.get(url, headers=headers, timeout=15)
-            if response.status_code == 200:
-                with zipfile.ZipFile(io.BytesIO(response.content)) as z:
-                    filename = z.namelist()[0]
-                    with z.open(filename) as f:
-                        df = pd.read_csv(f, low_memory=False)
-                        dfs.append(df)
+            df = pd.read_csv(csv_path, low_memory=False)
+            if not df.empty and 'Data' in df.columns:
+                df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
+                df = df.dropna(subset=['Data'])
+                if 'Net_NC' not in df.columns and 'NC_Long' in df.columns and 'NC_Short' in df.columns:
+                    df['Net_NC'] = df['NC_Long'] - df['NC_Short']
+                if 'Net_Comm' not in df.columns and 'Comm_Long' in df.columns and 'Comm_Short' in df.columns:
+                    df['Net_Comm'] = df['Comm_Long'] - df['Comm_Short']
+                return df
         except Exception as e:
-            print(f"🚨 ERRORE RETE CFTC ({year}): {e}")
+            pass
             
-    if not dfs:
-        raise ValueError("🚨 IMPOSSIBILE SCARICARE I DATI CFTC. Connessione interrotta.")
-        
-    df_raw = pd.concat(dfs, ignore_index=True)
-    
-    cols = {
-        'Market and Exchange Names': 'Asset_Raw',
-        'Report_Date_as_MM_DD_YYYY': 'Data',
-        'NonComm_Positions_Long_All': 'NC_Long',
-        'NonComm_Positions_Short_All': 'NC_Short',
-        'Comm_Positions_Long_All': 'Comm_Long',
-        'Comm_Positions_Short_All': 'Comm_Short'
-    }
-    
-    # Filtro colonne esistenti
-    valid_cols = {k: v for k, v in cols.items() if k in df_raw.columns}
-    df_clean = df_raw[list(valid_cols.keys())].rename(columns=valid_cols)
-    
-    df_clean['Data'] = pd.to_datetime(df_clean['Data'])
-    df_clean = df_clean.sort_values('Data').dropna(subset=['Data'])
-    
-    # Mappatura Asset: Tiene solo i contratti presenti nel dizionario
-    df_clean['Asset'] = df_clean['Asset_Raw'].map(CFTC_MAPPING)
-    df_clean = df_clean.dropna(subset=['Asset'])
-    
-    # Calcolo Posizionamento Netto Assoluto
-    df_clean['Net_NC'] = df_clean['NC_Long'] - df_clean['NC_Short']
-    df_clean['Net_Comm'] = df_clean['Comm_Long'] - df_clean['Comm_Short']
-    
-    return df_clean
+    raise ValueError("IMPOSSIBILE CARICARE LA MATRICE COT: File 'cot_history.csv' assente o non valido nella root.")
 
-# ==========================================================
-# FASE 2: MOTORE Z-SCORE 156 SETTIMANE E STELLE (Regola 2)
-# ==========================================================
-def calculate_cot_zscores(df_cot, window_weeks=156):
+def calculate_cot_zscores(df_cot: pd.DataFrame, window_weeks: int = 156) -> pd.DataFrame:
     """
-    Calcola lo Z-Score storico sulle Posizioni Nette di Commercials e Non-Commercials.
-    Identifica gli estremi (> 1.8 o < -1.8) assegnando la ⭐.
+    Calcola lo Z-Score storico sulle Posizioni Nette (Regola 2).
     """
-    if df_cot.empty:
+    if df_cot.empty or 'Net_NC' not in df_cot.columns:
         return pd.DataFrame()
 
     df = df_cot.sort_values(by=['Asset', 'Data']).copy()
+    min_obs = 52  
     
-    # Devono esserci almeno 52 settimane di storico per evitare rumore statistico
-    min_obs = 52 
-    
-    # Calcolo Z-Score Non-Commercials
     df['NC_Mean'] = df.groupby('Asset')['Net_NC'].transform(lambda x: x.rolling(window_weeks, min_periods=min_obs).mean())
     df['NC_Std'] = df.groupby('Asset')['Net_NC'].transform(lambda x: x.rolling(window_weeks, min_periods=min_obs).std())
     df['Z_NC'] = (df['Net_NC'] - df['NC_Mean']) / (df['NC_Std'] + 1e-9)
     
-    # Calcolo Z-Score Commercials
-    df['Comm_Mean'] = df.groupby('Asset')['Net_Comm'].transform(lambda x: x.rolling(window_weeks, min_periods=min_obs).mean())
-    df['Comm_Std'] = df.groupby('Asset')['Net_Comm'].transform(lambda x: x.rolling(window_weeks, min_periods=min_obs).std())
-    df['Z_Comm'] = (df['Net_Comm'] - df['Comm_Mean']) / (df['Comm_Std'] + 1e-9)
-    
-    # Estraiamo l'ultima riga disponibile per ogni asset (L'ultimo report CFTC)
+    if 'Net_Comm' in df.columns:
+        df['Comm_Mean'] = df.groupby('Asset')['Net_Comm'].transform(lambda x: x.rolling(window_weeks, min_periods=min_obs).mean())
+        df['Comm_Std'] = df.groupby('Asset')['Net_Comm'].transform(lambda x: x.rolling(window_weeks, min_periods=min_obs).std())
+        df['Z_Comm'] = (df['Net_Comm'] - df['Comm_Mean']) / (df['Comm_Std'] + 1e-9)
+    else:
+        df['Z_Comm'] = 0.0
+        
     latest = df.groupby('Asset').tail(1).copy()
-    latest = latest.dropna(subset=['Z_NC', 'Z_Comm'])
+    latest = latest.dropna(subset=['Z_NC'])
     
-    # Arrotondamento per UI
     latest['Z_NC'] = latest['Z_NC'].round(2)
     latest['Z_Comm'] = latest['Z_Comm'].round(2)
     
-    # Assegnazione Stella Estremi (Soglia +/- 1.8)
     latest['Alert_NC'] = np.where(latest['Z_NC'].abs() >= 1.8, "⭐", "")
-    latest['Alert_Comm'] = np.where(latest['Z_Comm'].abs() >= 1.8, "⭐", "")
+    latest['Alert_Comm'] = np.where(latest['Z_Comm'].abs() >= 1.8, "⭐", "") if 'Z_Comm' in latest.columns else ""
     
-    cols_to_return = ['Data', 'Asset', 'Net_NC', 'Z_NC', 'Alert_NC', 'Net_Comm', 'Z_Comm', 'Alert_Comm']
+    cols_to_return = [col for col in ['Data', 'Asset', 'Net_NC', 'Z_NC', 'Alert_NC', 'Net_Comm', 'Z_Comm', 'Alert_Comm'] if col in latest.columns]
     
-    # Ordiniamo dal più estremo al meno estremo sui Commercials
-    latest = latest[cols_to_return].sort_values(by='Z_Comm', key=abs, ascending=False).reset_index(drop=True)
+    sort_col = 'Z_Comm' if 'Z_Comm' in latest.columns else 'Z_NC'
+    latest = latest[cols_to_return].sort_values(by=sort_col, key=abs, ascending=False).reset_index(drop=True)
     
     return latest
-
-# ==========================================================
-# ESECUZIONE DI TEST (Da terminale locale)
-# ==========================================================
-if __name__ == "__main__":
-    print("Inizio estrazione dai server CFTC (potrebbe richiedere 10-20 secondi)...")
-    try:
-        df_raw = fetch_cftc_data(years_back=4)
-        print(f"Righe grezze estratte e mappate: {len(df_raw)}")
-        
-        df_zscore = calculate_cot_zscores(df_raw, window_weeks=156)
-        print("\n=== ULTIMO REPORT COT (Z-SCORE 3 ANNI) ===")
-        print(df_zscore.to_string())
-    except Exception as e:
-        print(e)
