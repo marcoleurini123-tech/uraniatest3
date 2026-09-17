@@ -31,11 +31,8 @@ def verify_access():
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             st.markdown("<br><br>", unsafe_allow_html=True)
-            logo_path = "logo.png"
-            if os.path.exists(logo_path):
-                st.image(logo_path, use_container_width=True)
-            else:
-                st.markdown("<h2 style='text-align: center; color: #cbd5e1;'>URANIA SYSTEM</h2>", unsafe_allow_html=True)
+            st.markdown("<h1 style='text-align: center; color: #38bdf8;'>🌌 URANIA</h1>", unsafe_allow_html=True)
+            st.markdown("<p style='text-align: center; color: #94a3b8; font-size: 0.9rem;'>Macro Intelligence & Institutional Terminal</p>", unsafe_allow_html=True)
             
             st.markdown("<br>", unsafe_allow_html=True)
             pwd_input = st.text_input("Inserire Token di Decrittazione:", type="password", key="pwd_input")
