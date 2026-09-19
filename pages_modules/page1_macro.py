@@ -5,10 +5,6 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 
-# ==========================================================
-# IMPORTAZIONI RIGOROSE DAL BACKEND (Regola 4)
-# Rimossa l'importazione di fetch_macro_cycle_data. L'UI usa solo il DB.
-# ==========================================================
 from backend_engine import (
     load_db, save_db, fetch_yahoo_data, fetch_bridge_data, 
     fetch_squeezemetrics_data, fetch_cboe_pc_ratio, COLUMNS,
@@ -22,31 +18,11 @@ def get_cached_regime_data():
     return fetch_regime_baskets_data(period="10y")
 
 def render_page1():
-    # CSS Iniettato: Dominanza assoluta sui nodi di testo Streamlit
     st.markdown("""
     <style>
         .stApp { background-color: #0b1121 !important; color: #f8fafc !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-        
-        /* Cifre Metriche Principali */
-        [data-testid="stMetricValue"], 
-        [data-testid="stMetricValue"] > div { 
-            color: #ffffff !important; 
-            font-size: 1.7rem !important; 
-            font-weight: 800 !important; 
-        }
-        
-        /* Etichette Metriche - Neutralizzazione ereditarietà di sistema */
-        [data-testid="stMetricLabel"],
-        [data-testid="stMetricLabel"] * { 
-            color: #cbd5e1 !important; 
-            font-weight: 700 !important; 
-            font-size: 0.85rem !important; 
-            text-transform: uppercase !important; 
-            letter-spacing: 0.5px !important; 
-            opacity: 1 !important;
-            visibility: visible !important;
-        }
-        
+        [data-testid="stMetricValue"], [data-testid="stMetricValue"] > div { color: #ffffff !important; font-size: 1.7rem !important; font-weight: 800 !important; }
+        [data-testid="stMetricLabel"], [data-testid="stMetricLabel"] * { color: #cbd5e1 !important; font-weight: 700 !important; font-size: 0.85rem !important; text-transform: uppercase !important; letter-spacing: 0.5px !important; opacity: 1 !important; visibility: visible !important; }
         hr { border-color: #1e293b !important; margin-top: 2rem !important; margin-bottom: 2rem !important; }
     </style>
     """, unsafe_allow_html=True)
@@ -101,12 +77,10 @@ def render_page1():
         st.warning("⚠️ Database locale vuoto. Procedere con l'inizializzazione dei flussi API.")
         return
 
-    # Normalizzazione Dataset EOD
     df = df.sort_values("Data").reset_index(drop=True)
     num_cols = [c for c in COLUMNS if c != "Data" and c in df.columns]
     df[num_cols] = df[num_cols].ffill(limit=7)
 
-    # Indicatori Calcolati Matematicamente
     if 'Net_Liquidity' in df.columns:
         df['Liq_Delta_5D'] = df['Net_Liquidity'].pct_change(periods=5) * 100
     df['Ratio_GO'] = np.where(df['USO'] > 0, df['GLD'] / df['USO'], np.nan) if 'USO' in df.columns and 'GLD' in df.columns else np.nan
@@ -116,17 +90,28 @@ def render_page1():
     last = df.iloc[-1]
     
     # ==========================================================
-    # MODULO RISK MANAGEMENT (HARD OVERRIDE)
+    # MODULO RISK MANAGEMENT & OPPORTUNITY
     # ==========================================================
-    is_risk_off, override_reasons, current_skew, current_vix = evaluate_risk_override(df)
+    # QUI AVVENIVA IL CRASH: Ora le 5 variabili corrispondono perfettamente al backend.
+    is_risk_off, risk_reasons, bullish_reasons, current_skew, current_vix = evaluate_risk_override(df)
 
     if is_risk_off:
         st.markdown(f"""
-        <div style="background-color: #450a0a; border: 1px solid #ef4444; border-radius: 6px; padding: 16px; margin-bottom: 24px;">
+        <div style="background-color: #450a0a; border: 1px solid #ef4444; border-radius: 6px; padding: 16px; margin-bottom: 16px;">
             <h3 style="margin:0; color:#ef4444; font-size: 1.2rem;">🚨 HARD OVERRIDE ATTIVO: RISK OFF / PANICO</h3>
             <p style="margin-top:8px; color: #fca5a5; font-size: 0.95rem; font-weight:bold;">BLOCCO OPERATIVO ASSOLUTO.</p>
             <ul style="margin:0; padding-left:20px; color: #fca5a5; font-size: 0.95rem;">
-                {''.join([f'<li>{r}</li>' for r in override_reasons])}
+                {''.join([f'<li>⚠️ {r}</li>' for r in risk_reasons])}
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    if bullish_reasons:
+        st.markdown(f"""
+        <div style="background-color: #064e3b; border: 1px solid #10b981; border-radius: 6px; padding: 16px; margin-bottom: 24px;">
+            <h3 style="margin:0; color:#10b981; font-size: 1.2rem;">🟢 SEGNALE CONTRARIAN: ACCUMULO DARK POOL</h3>
+            <ul style="margin-top:8px; padding-left:20px; color: #a7f3d0; font-size: 0.95rem;">
+                {''.join([f'<li>📈 {r}</li>' for r in bullish_reasons])}
             </ul>
         </div>
         """, unsafe_allow_html=True)
@@ -227,7 +212,7 @@ def render_page1():
     st.write("")
     
     # ==========================================================
-    # MATRICE HEATMAP
+    # MATRICE HEATMAP (VINCITORE IN BIANCO)
     # ==========================================================
     st.markdown("### 🗺️ Matrice dei Regimi di Mercato")
 
@@ -236,18 +221,35 @@ def render_page1():
         df_norm = (df_numeric - df_numeric.min()) / (df_numeric.max() - df_numeric.min())
         df_norm = df_norm.fillna(0.5)
 
+        if dominant_regime in df_norm.index:
+            df_norm.loc[dominant_regime] = 2.0
+
+        text_array = []
+        for r in df_matrix.index:
+            row_text = []
+            for c in df_matrix.columns:
+                val = df_matrix.loc[r, c]
+                t = f"{val:+.2f}%" if pd.notna(val) else "N/D"
+                if r == dominant_regime:
+                    row_text.append(f"<b>{t}</b>")
+                else:
+                    row_text.append(t)
+            text_array.append(row_text)
+
         fig_hm = go.Figure(data=go.Heatmap(
             z=df_norm.values, 
             x=df_matrix.columns,
             y=df_matrix.index,
             colorscale=[
-                [0.0, '#ef4444'], 
-                [0.5, '#fef08a'], 
-                [1.0, '#22c55e']  
+                [0.00, '#ef4444'], 
+                [0.25, '#fef08a'], 
+                [0.50, '#22c55e'], 
+                [0.51, '#ffffff'], 
+                [1.00, '#ffffff']  
             ],
             zmin=0.0,
-            zmax=1.0,
-            text=df_matrix.map(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/D").values,
+            zmax=2.0,
+            text=text_array,
             texttemplate="%{text}",
             showscale=False,
             xgap=2, ygap=2
@@ -269,11 +271,10 @@ def render_page1():
     st.divider()
 
     # ==========================================================
-    # MODULO CICLO ECONOMICO E HARD VETO (Regola 4 Rispettata)
+    # MODULO CICLO ECONOMICO E HARD VETO
     # ==========================================================
     st.markdown("### 🧭 Posizionamento nel Ciclo Economico")
     with st.spinner("Estrazione tassi di rendimento e computo delle pendenze..."):
-        # L'interfaccia passa il DB master (df) già caricato, senza chiamare API aggiuntive.
         fase_attuale, raw_phase, veto_applied, macro_metrics = calculate_macro_cycle_phase(df, dominant_regime)
 
     if veto_applied:
