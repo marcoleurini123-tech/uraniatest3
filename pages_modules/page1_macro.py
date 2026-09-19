@@ -210,27 +210,36 @@ def render_page1():
         """, unsafe_allow_html=True)
 
     st.write("")
-    
     # ==========================================================
-    # MATRICE HEATMAP (VINCITORE IN BIANCO)
+    # MATRICE HEATMAP (VINCITORE DI OGNI COLONNA IN BIANCO)
     # ==========================================================
     st.markdown("### 🗺️ Matrice dei Regimi di Mercato")
 
     if not df_matrix.empty:
         df_numeric = df_matrix.apply(pd.to_numeric, errors='coerce')
-        df_norm = (df_numeric - df_numeric.min()) / (df_numeric.max() - df_numeric.min())
+        
+        # Normalizzazione globale per il gradiente standard (da 0 a 1)
+        vmin = df_numeric.min().min()
+        vmax = df_numeric.max().max()
+        df_norm = (df_numeric - vmin) / (vmax - vmin + 1e-9)
         df_norm = df_norm.fillna(0.5)
 
-        if dominant_regime in df_norm.index:
-            df_norm.loc[dominant_regime] = 2.0
+        # OVERRIDE: Trova il massimo per OGNI colonna e forzalo a 2.0 (Bianco)
+        for col in df_numeric.columns:
+            max_idx = df_numeric[col].idxmax()
+            if pd.notna(max_idx):
+                df_norm.loc[max_idx, col] = 2.0
 
+        # Creazione dei testi per le celle (grassetto per i massimi)
         text_array = []
         for r in df_matrix.index:
             row_text = []
             for c in df_matrix.columns:
                 val = df_matrix.loc[r, c]
                 t = f"{val:+.2f}%" if pd.notna(val) else "N/D"
-                if r == dominant_regime:
+                
+                # Se questo è il valore massimo per la sua colonna, mettilo in grassetto
+                if pd.notna(val) and val == df_numeric[c].max():
                     row_text.append(f"<b>{t}</b>")
                 else:
                     row_text.append(t)
@@ -241,14 +250,14 @@ def render_page1():
             x=df_matrix.columns,
             y=df_matrix.index,
             colorscale=[
-                [0.00, '#ef4444'], 
-                [0.25, '#fef08a'], 
-                [0.50, '#22c55e'], 
-                [0.51, '#ffffff'], 
-                [1.00, '#ffffff']  
+                [0.00, '#ef4444'], # Rosso (0-33%)
+                [0.25, '#fef08a'], # Giallo neutrale
+                [0.50, '#22c55e'], # Verde
+                [0.51, '#ffffff'], # Stacco netto verso il bianco
+                [1.00, '#ffffff']  # Bianco puro per i valori a 2.0
             ],
             zmin=0.0,
-            zmax=2.0,
+            zmax=2.0, # Scala estesa per ospitare il 2.0 bianco
             text=text_array,
             texttemplate="%{text}",
             showscale=False,
@@ -267,9 +276,7 @@ def render_page1():
         st.plotly_chart(fig_hm, use_container_width=True)
     else:
         st.warning("⚠️ Dati insufficienti per renderizzare la matrice dei regimi.")
-
-    st.divider()
-
+   
     # ==========================================================
     # MODULO CICLO ECONOMICO E HARD VETO
     # ==========================================================
