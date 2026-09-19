@@ -120,7 +120,6 @@ def fetch_institutional_macro_data(days=365):
         
         response = requests.get(url, timeout=15)
         
-        # ECCEZIONI CHIRURGICHE
         if response.status_code == 400:
             raise ValueError(f"🚨 ERRORE 400 FRED: Chiave API rifiutata o malformata. Hai inserito: '{fred_api_key}'")
         elif response.status_code != 200:
@@ -218,7 +217,6 @@ def sync_all_data():
     df_db = load_db()
     
     df_yf = fetch_yahoo_data()
-    # Il blocco dell'app avverrà qui in caso di fallimento API, senza procedere oltre.
     df_fred = fetch_institutional_macro_data()
     df_bridge = fetch_bridge_data()
     df_dix = fetch_squeezemetrics_data()
@@ -466,8 +464,10 @@ def calculate_risk_propensity(df_master):
 def evaluate_risk_override(df_db):
     if df_db.empty: return False, ["Dati Mancanti"], np.nan, np.nan
     df_clean = df_db.sort_values("Data").ffill()
+    
     skew_val = df_clean['SKEW'].iloc[-1] if 'SKEW' in df_clean.columns else np.nan
     vix_val = df_clean['VIX'].iloc[-1] if 'VIX' in df_clean.columns else np.nan
+    dix_val = df_clean['DIX'].iloc[-1] if 'DIX' in df_clean.columns else np.nan
     
     net_liq_contraction = False
     if 'Net_Liquidity' in df_clean.columns:
@@ -481,11 +481,23 @@ def evaluate_risk_override(df_db):
 
     trigger_skew = (not np.isnan(skew_val)) and (skew_val >= 140.0)
     trigger_vix = (not np.isnan(vix_val)) and (vix_val >= 30.0)
+    trigger_dix = (not np.isnan(dix_val)) and (dix_val >= 45.0)
+    
     is_risk_off = trigger_skew or trigger_vix or net_liq_contraction
     
     reasons = []
-    if trigger_skew: reasons.append(f"SKEW Critico: {skew_val:.1f} (> 140.0)")
-    if trigger_vix: reasons.append(f"VIX Panico: {vix_val:.1f} (> 30.0)")
-    if net_liq_contraction: reasons.append("Contrazione mensile netta della Liquidità FED > 6.5%")
+    if trigger_skew: reasons.append(f"⚠️ SKEW Critico: {skew_val:.1f} (> 140.0)")
+    if trigger_vix: reasons.append(f"⚠️ VIX Panico: {vix_val:.1f} (> 30.0)")
+    if net_liq_contraction: reasons.append("⚠️ Contrazione mensile netta della Liquidità FED > 6.5%")
+    if trigger_dix: reasons.append(f"🟢 DIX in Accumulo: {dix_val:.1f}% (Dark Pool > 45%)")
     
     return is_risk_off, reasons, skew_val, vix_val
+
+def evidenzia_regime_dominante(row, dominant):
+    """
+    Funzione helper da usare con pandas.Styler.apply
+    Forza lo sfondo bianco per la riga del regime dominante (accessibilità visiva).
+    """
+    if row.name == dominant:
+        return ['background-color: #FFFFFF; color: #000000; font-weight: bold'] * len(row)
+    return [''] * len(row)
