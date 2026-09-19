@@ -1,4 +1,3 @@
-import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
@@ -6,6 +5,7 @@ import io
 import yfinance as yf
 import os
 import math
+import streamlit as st
 from datetime import datetime, timedelta
 from scipy.stats import linregress
 
@@ -95,16 +95,10 @@ def fetch_yahoo_data(days=365):
         return pd.DataFrame(columns=['Data'] + list(tickers_map.values()))
 
 def fetch_institutional_macro_data(days=365):
-    """
-    MODULO 1: DATA FETCHING ISTITUZIONALE
-    Regola 1 & 3: Sollevamento di eccezioni critiche (raise) in caso di anomalia. 
-    Nessun fallimento silenzioso tollerato.
-    """
     if "FRED_API_KEY" not in st.secrets:
-        raise KeyError("🚨 REGOLA 3 VIOLATA: 'FRED_API_KEY' non trovata in st.secrets. Controlla l'interfaccia di configurazione.")
+        raise KeyError("🚨 REGOLA 3 VIOLATA: 'FRED_API_KEY' non trovata in st.secrets.")
         
     fred_api_key = st.secrets["FRED_API_KEY"].strip()
-    
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days)
     
@@ -114,39 +108,33 @@ def fetch_institutional_macro_data(days=365):
     }
     
     df_fred = pd.DataFrame()
-    
     for series_id, col_name in fred_series.items():
         url = f"https://api.stlouisfed.org/fred/series/observations?series_id={series_id}&api_key={fred_api_key}&file_type=json&observation_start={start_date.strftime('%Y-%m-%d')}&observation_end={end_date.strftime('%Y-%m-%d')}"
-        
         response = requests.get(url, timeout=15)
         
         if response.status_code == 400:
-            raise ValueError(f"🚨 ERRORE 400 FRED: Chiave API rifiutata o malformata. Hai inserito: '{fred_api_key}'")
+            raise ValueError(f"🚨 ERRORE 400 FRED: Chiave API rifiutata. Chiave: '{fred_api_key}'")
         elif response.status_code != 200:
-            raise ConnectionError(f"🚨 ERRORE DI RETE FRED ({series_id}): Status {response.status_code} - Dettaglio Server: {response.text}")
+            raise ConnectionError(f"🚨 ERRORE FRED ({series_id}): Status {response.status_code}")
             
         data = response.json()
         if 'observations' not in data:
-            raise ValueError(f"🚨 ANOMALIA DATI FRED: L'endpoint non ha restituito il blocco 'observations' per la serie {series_id}.")
+            raise ValueError(f"🚨 ANOMALIA FRED: Niente 'observations' in {series_id}.")
             
         obs = data['observations']
         df_temp = pd.DataFrame(obs)[['date', 'value']]
         df_temp = df_temp.rename(columns={'date': 'Data', 'value': col_name})
         df_temp['Data'] = pd.to_datetime(df_temp['Data'])
-        
         df_temp[col_name] = pd.to_numeric(df_temp[col_name], errors='coerce')
         df_temp = df_temp.set_index('Data')
         
-        if df_fred.empty:
-            df_fred = df_temp
-        else:
-            df_fred = df_fred.join(df_temp, how='outer')
+        if df_fred.empty: df_fred = df_temp
+        else: df_fred = df_fred.join(df_temp, how='outer')
             
     if df_fred.empty:
-        raise ValueError("🚨 ANOMALIA CALCOLO: Il dataframe derivato da FRED risulta completamente vuoto dopo l'iterazione.")
+        raise ValueError("🚨 ANOMALIA: Il dataframe FRED risulta vuoto.")
         
     df_fred.ffill(inplace=True)
-    
     if set(['WALCL_raw', 'TGA_raw', 'REPO_raw']).issubset(df_fred.columns):
         df_fred['Net_Liquidity'] = df_fred['WALCL_raw'] - df_fred['TGA_raw'].fillna(0) - df_fred['REPO_raw'].fillna(0)
     else:
@@ -154,7 +142,6 @@ def fetch_institutional_macro_data(days=365):
         
     df_fred = df_fred.reset_index()
     df_fred['Data'] = pd.to_datetime(df_fred['Data']).dt.tz_localize(None).dt.normalize()
-    
     df_fred['ISM_PMI'] = np.nan 
     
     cols_to_return = ['Data', '10Y_Yield', '2Y_Yield', '30Y_Yield', 'ISM_PMI', 'Net_Liquidity']
@@ -287,20 +274,16 @@ def calculate_regime_matrix(df_prices):
         
         for tf_label, offset in TIMEFRAMES_CALENDAR.items():
             if tf_label == "Δ 1D":
-                if len(valid_current_slice) >= 2:
-                    p_past = valid_current_slice.iloc[-2]
-                else:
-                    p_past = pd.Series(np.nan, index=basket_prices.columns)
+                if len(valid_current_slice) >= 2: p_past = valid_current_slice.iloc[-2]
+                else: p_past = pd.Series(np.nan, index=basket_prices.columns)
             else:
                 target_date = today - offset
                 p_past_dict = {}
-                
                 for t in basket_prices.columns:
                     series = basket_prices[t].dropna()
                     if series.empty:
                         p_past_dict[t] = np.nan
                         continue
-                    
                     first_idx = series.index[0]
                     if first_idx > target_date:
                         p_past_dict[t] = np.nan
@@ -310,19 +293,15 @@ def calculate_regime_matrix(df_prices):
                             first_valid_date = slice_forward.index[0]
                             if (first_valid_date - pd.Timestamp(target_date)).days <= 7:
                                 p_past_dict[t] = slice_forward.iloc[0]
-                            else:
-                                p_past_dict[t] = np.nan
-                        else:
-                            p_past_dict[t] = np.nan
+                            else: p_past_dict[t] = np.nan
+                        else: p_past_dict[t] = np.nan
                 p_past = pd.Series(p_past_dict)
             
             roc = ((p_now - p_past) / p_past) * 100.0
             valid_roc = roc.dropna()
             
-            if not valid_roc.empty:
-                row_data[tf_label] = float(valid_roc.mean())
-            else:
-                row_data[tf_label] = np.nan
+            if not valid_roc.empty: row_data[tf_label] = float(valid_roc.mean())
+            else: row_data[tf_label] = np.nan
                 
         matrix.append(row_data)
 
@@ -355,15 +334,11 @@ def calculate_regime_matrix(df_prices):
     return df_matrix.round(2), dominant, confidence_pct
 
 def calculate_macro_cycle_phase(df_macro, predominant_regime):
-    if df_macro.empty or len(df_macro) < 252:
-        return "DATI INSUFFICIENTI", "N/D", False, {}
-        
+    if df_macro.empty or len(df_macro) < 252: return "DATI INSUFFICIENTI", "N/D", False, {}
     df = df_macro.copy().ffill()
-    
     req_cols = ['10Y_Yield', '2Y_Yield', '30Y_Yield', 'Copper', 'Gold', 'TIPS_ETF']
     for col in req_cols:
-        if col not in df.columns or df[col].isna().all():
-            return "ERRORE DATI", "N/D", False, {}
+        if col not in df.columns or df[col].isna().all(): return "ERRORE DATI", "N/D", False, {}
 
     df['Spread_10Y_2Y'] = df['10Y_Yield'] - df['2Y_Yield']
     current_spread = df['Spread_10Y_2Y'].iloc[-1]
@@ -402,7 +377,6 @@ def calculate_macro_cycle_phase(df_macro, predominant_regime):
         final_phase = "Picco / Stagflazione" if cg_slope >= 0 else "Contrazione"
 
     ism_val = df['ISM_PMI'].iloc[-1] if 'ISM_PMI' in df.columns else np.nan
-
     metrics = {
         "Spread_10Y_2Y": round(current_spread, 2),
         "Pendenza_Cu_Au_40D": round(cg_slope, 3),
@@ -413,8 +387,7 @@ def calculate_macro_cycle_phase(df_macro, predominant_regime):
     return final_phase, raw_phase, veto_applied, metrics
 
 def calculate_risk_propensity(df_master):
-    if df_master.empty or len(df_master) < 252:
-        return None, "DATI INSUFFICIENTI"
+    if df_master.empty or len(df_master) < 252: return None, "DATI INSUFFICIENTI"
     df_calc = df_master.tail(252).copy()
     required = ['XLY', 'XLP', 'SPY', 'RSP', 'HYG', 'TLT']
     if not all(col in df_calc.columns for col in required): return None, "DATI INSUFFICIENTI"
@@ -434,17 +407,14 @@ def calculate_risk_propensity(df_master):
     if 'VIX' in df_calc.columns and 'VIX3M' in df_calc.columns:
         df_calc['VIX_Struct'] = np.where(df_calc['VIX3M'] > 0, df_calc['VIX'] / df_calc['VIX3M'], np.nan)
         vix_s = df_calc['VIX_Struct'].dropna()
-        if len(vix_s) > 100:
-            z_vix = -((vix_s.iloc[-1] - vix_s.mean()) / (vix_s.std(ddof=0) + 1e-9))
+        if len(vix_s) > 100: z_vix = -((vix_s.iloc[-1] - vix_s.mean()) / (vix_s.std(ddof=0) + 1e-9))
             
     z_move = 0.0
     if 'MOVE' in df_calc.columns:
         move_s = df_calc['MOVE'].dropna()
-        if len(move_s) > 100:
-             z_move = -((move_s.iloc[-1] - move_s.mean()) / (move_s.std(ddof=0) + 1e-9))
+        if len(move_s) > 100: z_move = -((move_s.iloc[-1] - move_s.mean()) / (move_s.std(ddof=0) + 1e-9))
 
     avg_z = (z_xly + z_spy + z_hyg + z_vix + z_move) / 5.0
-
     risk_on_prob = 0.5 * (1 + math.erf(avg_z / math.sqrt(2)))
     risk_on_pct = round(risk_on_prob * 100.0, 1)
     risk_off_pct = round(100.0 - risk_on_pct, 1)
@@ -462,7 +432,7 @@ def calculate_risk_propensity(df_master):
     return metrics, None
 
 def evaluate_risk_override(df_db):
-    if df_db.empty: return False, ["Dati Mancanti"], np.nan, np.nan
+    if df_db.empty: return False, [], [], np.nan, np.nan
     df_clean = df_db.sort_values("Data").ffill()
     
     skew_val = df_clean['SKEW'].iloc[-1] if 'SKEW' in df_clean.columns else np.nan
@@ -485,19 +455,12 @@ def evaluate_risk_override(df_db):
     
     is_risk_off = trigger_skew or trigger_vix or net_liq_contraction
     
-    reasons = []
-    if trigger_skew: reasons.append(f"⚠️ SKEW Critico: {skew_val:.1f} (> 140.0)")
-    if trigger_vix: reasons.append(f"⚠️ VIX Panico: {vix_val:.1f} (> 30.0)")
-    if net_liq_contraction: reasons.append("⚠️ Contrazione mensile netta della Liquidità FED > 6.5%")
-    if trigger_dix: reasons.append(f"🟢 DIX in Accumulo: {dix_val:.1f}% (Dark Pool > 45%)")
+    risk_reasons = []
+    if trigger_skew: risk_reasons.append(f"SKEW Critico: {skew_val:.1f} (> 140.0)")
+    if trigger_vix: risk_reasons.append(f"VIX Panico: {vix_val:.1f} (> 30.0)")
+    if net_liq_contraction: risk_reasons.append("Contrazione mensile netta della Liquidità FED > 6.5%")
     
-    return is_risk_off, reasons, skew_val, vix_val
-
-def evidenzia_regime_dominante(row, dominant):
-    """
-    Funzione helper da usare con pandas.Styler.apply
-    Forza lo sfondo bianco per la riga del regime dominante (accessibilità visiva).
-    """
-    if row.name == dominant:
-        return ['background-color: #FFFFFF; color: #000000; font-weight: bold'] * len(row)
-    return [''] * len(row)
+    bullish_reasons = []
+    if trigger_dix: bullish_reasons.append(f"DIX in Accumulo istituzionale: {dix_val:.1f}% (Dark Pool > 45%)")
+    
+    return is_risk_off, risk_reasons, bullish_reasons, skew_val, vix_val
