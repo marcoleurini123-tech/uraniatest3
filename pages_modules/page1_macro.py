@@ -211,24 +211,33 @@ def render_page1():
 
     st.write("")
     # ==========================================================
-    # MATRICE HEATMAP (VINCITORE DI OGNI COLONNA IN BIANCO)
+    # MATRICE HEATMAP (NORMALIZZATA PER COLONNA + VINCITORE BIANCO)
     # ==========================================================
     st.markdown("### 🗺️ Matrice dei Regimi di Mercato")
 
     if not df_matrix.empty:
         df_numeric = df_matrix.apply(pd.to_numeric, errors='coerce')
         
-        # Normalizzazione globale per il gradiente standard (da 0 a 1)
-        vmin = df_numeric.min().min()
-        vmax = df_numeric.max().max()
-        df_norm = (df_numeric - vmin) / (vmax - vmin + 1e-9)
-        df_norm = df_norm.fillna(0.5)
-
-        # OVERRIDE: Trova il massimo per OGNI colonna e forzalo a 2.0 (Bianco)
+        # Creiamo un dataframe vuoto per le coordinate dei colori
+        df_norm = pd.DataFrame(index=df_numeric.index, columns=df_numeric.columns)
+        
+        # Normalizzazione COLONNA per COLONNA
         for col in df_numeric.columns:
+            col_min = df_numeric[col].min()
+            col_max = df_numeric[col].max()
+            
+            if col_max == col_min:
+                df_norm[col] = 0.5
+            else:
+                # Normalizza i valori da 0.0 (peggiore) a 1.0 (migliore) dentro la singola colonna
+                df_norm[col] = (df_numeric[col] - col_min) / (col_max - col_min)
+                
+            # Trova il massimo assoluto della colonna e forzalo a 2.0 (Valore di "rottura" per il bianco)
             max_idx = df_numeric[col].idxmax()
             if pd.notna(max_idx):
                 df_norm.loc[max_idx, col] = 2.0
+
+        df_norm = df_norm.fillna(0.5)
 
         # Creazione dei testi per le celle (grassetto per i massimi)
         text_array = []
@@ -238,26 +247,27 @@ def render_page1():
                 val = df_matrix.loc[r, c]
                 t = f"{val:+.2f}%" if pd.notna(val) else "N/D"
                 
-                # Se questo è il valore massimo per la sua colonna, mettilo in grassetto
+                # Grassetto se è il vincitore della colonna
                 if pd.notna(val) and val == df_numeric[c].max():
                     row_text.append(f"<b>{t}</b>")
                 else:
                     row_text.append(t)
             text_array.append(row_text)
 
+        # Rendering Plotly
         fig_hm = go.Figure(data=go.Heatmap(
             z=df_norm.values, 
             x=df_matrix.columns,
             y=df_matrix.index,
             colorscale=[
-                [0.00, '#ef4444'], # Rosso (0-33%)
-                [0.25, '#fef08a'], # Giallo neutrale
-                [0.50, '#22c55e'], # Verde
-                [0.51, '#ffffff'], # Stacco netto verso il bianco
-                [1.00, '#ffffff']  # Bianco puro per i valori a 2.0
+                [0.00, '#ef4444'],   # 0.0 mappa al peggiore (Rosso)
+                [0.25, '#fef08a'],   # 0.5 mappa ai valori intermedi (Giallo)
+                [0.50, '#22c55e'],   # 1.0 mappa ai migliori "non vincitori" (Verde)
+                [0.5001, '#ffffff'], # Subito dopo l'1.0, rompe la scala
+                [1.00, '#ffffff']    # 2.0 mappa al vincitore assoluto (Bianco candido)
             ],
             zmin=0.0,
-            zmax=2.0, # Scala estesa per ospitare il 2.0 bianco
+            zmax=2.0, # Scala estesa da 0 a 2 per gestire il bianco
             text=text_array,
             texttemplate="%{text}",
             showscale=False,
@@ -276,7 +286,9 @@ def render_page1():
         st.plotly_chart(fig_hm, use_container_width=True)
     else:
         st.warning("⚠️ Dati insufficienti per renderizzare la matrice dei regimi.")
-   
+
+    st.divider()
+     
     # ==========================================================
     # MODULO CICLO ECONOMICO E HARD VETO
     # ==========================================================
